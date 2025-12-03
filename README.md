@@ -162,3 +162,4 @@ Then pull from Docker Hub in Unraid.
 ## License
 
 MIT - Part of the Sip & Play cafe management system.
+
