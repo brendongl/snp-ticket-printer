@@ -1,5 +1,5 @@
 # SNP Printer Service - Docker Compose
-# For local development or Unraid deployment
+# For Unraid deployment
 
 version: '3.8'
 
@@ -13,18 +13,23 @@ services:
     environment:
       # Printer Configuration
       - PRINTER_TYPE=network
-      - NETWORK_HOST=${NETWORK_HOST:-192.168.1.100}
+      - NETWORK_HOST=${NETWORK_HOST:-192.168.50.103}
       - NETWORK_PORT=${NETWORK_PORT:-9100}
-      # Multiple printers (comma-separated)
-      # - PRINTER_HOSTS=192.168.1.100,192.168.1.101
+
+      # Optional: Second printer
+      # - PRINTER_2_HOST=192.168.50.104
+      # - PRINTER_2_PORT=9100
 
       # Server Configuration
       - HOST=0.0.0.0
       - PORT=5000
       - DEBUG=${DEBUG:-false}
-    # Use host network mode for easier printer discovery
-    # Uncomment below and comment out 'ports' if needed
-    # network_mode: host
+
+      # Security (set REQUIRE_AUTH=true for production)
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
+      - API_KEY_SNP_SITE=${API_KEY_SNP_SITE:-dev-key-snp-site}
+      - API_KEY_ADMIN=${API_KEY_ADMIN:-dev-key-admin}
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
       interval: 30s
