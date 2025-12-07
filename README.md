@@ -1,6 +1,16 @@
 # SNP Printer Service
 
-A minimal Flask service for printing to network ESC/POS thermal printers. Designed for Unraid deployment via Docker.
+A Flask service for printing to network ESC/POS thermal printers with web-based management UI. Designed for Unraid deployment via Docker.
+
+## Features
+
+- **Web-based Management UI** - Configure printers, send messages, monitor health
+- **Multi-Printer Support** - Add/remove printers via web interface
+- **Network Discovery** - Scan for printers on your network
+- **Health Monitoring** - Background monitoring with offline alerts
+- **Notifications** - Discord webhook and Pushover alerts when printers go offline
+- **API Authentication** - Optional API key protection
+- **Print Templates** - Message, reminder, task, and order templates
 
 ## Quick Start
 
@@ -10,13 +20,13 @@ Your POS thermal printers should be connected via Ethernet and have an IP addres
 
 - Check printer's network settings menu
 - Look at your router's DHCP client list
-- Use the discovery endpoint after starting the service
+- Use the discovery feature in the web UI after starting the service
 
 ### 2. Configure Environment
 
 ```bash
 cp .env.example .env
-# Edit .env with your printer's IP address
+# Edit .env with your printer's IP address and notification settings
 ```
 
 ### 3. Run with Docker Compose
@@ -32,109 +42,142 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### 4. Test the Printer
+### 4. Access Web UI
 
-```bash
-# Check service health
-curl http://localhost:5000/health
+Open `http://localhost:5000` in your browser to access the management interface.
 
-# Check printer status
-curl http://localhost:5000/printer/status
+## Web UI Features
 
-# Send test print
-curl -X POST http://localhost:5000/print/test \
-  -H "Content-Type: application/json" \
-  -d '{}'
+### Printer Management
+- View all configured printers with online/offline status
+- Add new printers by IP address
+- Remove printers
+- Send test prints to verify connectivity
 
-# Print custom message
-curl -X POST http://localhost:5000/print/message \
-  -H "Content-Type: application/json" \
-  -d '{"title": "REMINDER", "message": "Dont forget to clock out!"}'
-```
+### Printer Discovery
+- Scan your network for thermal printers
+- Automatically find printers on port 9100
+- Add discovered printers with one click
+
+### Send Messages
+- Send custom messages to any configured printer
+- Multiple templates: message, reminder, task, order
+- Preview before printing
+
+### Health Monitoring
+- Enable background monitoring (configurable interval)
+- Automatic notifications when printers go offline
+- Real-time status updates
+
+### Notifications
+- **Discord Webhooks** - Get alerts in your Discord channel
+- **Pushover** - Mobile push notifications
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Service info and available endpoints |
+| `/` | GET | Web UI |
 | `/health` | GET | Health check with config info |
-| `/printer/status` | GET | Check if printer(s) are reachable |
-| `/printer/discover` | GET | Scan network for printers |
-| `/print/test` | POST | Send test print |
-| `/print/message` | POST | Print custom message |
+| `/api/status` | GET | All printer statuses |
+| `/api/printer/<name>/ping` | GET | Ping specific printer |
+| `/api/printer/add` | POST | Add new printer |
+| `/api/printer/remove` | POST | Remove printer |
+| `/api/discover` | GET | Scan network for printers |
+| `/api/print` | POST | Send print job |
+| `/api/config/notifications` | GET/POST | Notification settings |
+| `/api/monitoring/start` | POST | Start health monitoring |
+| `/api/monitoring/stop` | POST | Stop health monitoring |
+| `/api/monitoring/status` | GET | Monitoring status |
 
-### Printer Discovery
-
-Scan your network to find printers:
-
-```bash
-# Scan default range (192.168.1.1-50)
-curl "http://localhost:5000/printer/discover"
-
-# Custom range
-curl "http://localhost:5000/printer/discover?subnet=192.168.0&start=1&end=100"
-```
-
-### Print Message
+### Example: Print Custom Message
 
 ```bash
-curl -X POST http://localhost:5000/print/message \
+curl -X POST http://localhost:5000/api/print \
   -H "Content-Type: application/json" \
   -d '{
-    "title": "CLOCK OUT REMINDER",
-    "message": "Your shift ends in 15 minutes!\nDont forget to clock out."
+    "printer": "default",
+    "template": "message",
+    "title": "REMINDER",
+    "message": "Dont forget to clock out!"
   }'
+```
+
+### Example: Scan for Printers
+
+```bash
+curl "http://localhost:5000/api/discover?subnet=192.168.50&start=1&end=254"
 ```
 
 ## Environment Variables
 
+### Printer Configuration
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRINTER_TYPE` | `network` | Printer connection type |
-| `NETWORK_HOST` | `192.168.1.100` | Printer IP address |
+| `NETWORK_HOST` | `192.168.50.103` | Default printer IP address |
 | `NETWORK_PORT` | `9100` | Printer port (standard ESC/POS) |
-| `PRINTER_HOSTS` | - | Multiple printers (comma-separated) |
+
+### Server Configuration
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `HOST` | `0.0.0.0` | Server bind address |
 | `PORT` | `5000` | Server port |
 | `DEBUG` | `false` | Enable debug mode |
+| `CONFIG_FILE` | `/app/data/config.json` | Config file location |
 
-## Unraid Deployment
+### Notifications
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCORD_WEBHOOK_URL` | - | Discord webhook for offline alerts |
+| `PUSHOVER_USER_KEY` | - | Pushover user key |
+| `PUSHOVER_APP_TOKEN` | - | Pushover app token |
+
+### Security
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REQUIRE_AUTH` | `false` | Require API keys |
+| `API_KEY_SNP_SITE` | - | API key for snp-site |
+| `API_KEY_ADMIN` | - | API key for admin access |
+
+## Docker Deployment
 
 ### Option 1: Docker Compose (Recommended)
 
-1. Copy this folder to your Unraid server
-2. SSH into Unraid and navigate to the folder
+1. Clone this repository
+2. Copy `.env.example` to `.env` and configure
 3. Run `docker-compose up -d`
 
-### Option 2: Unraid Community Applications
+Configuration is persisted in the `./data` directory.
+
+### Option 2: Docker Run
+
+```bash
+docker build -t snp-printer-service .
+docker run -d \
+  -p 5000:5000 \
+  -v $(pwd)/data:/app/data \
+  -e NETWORK_HOST=192.168.50.103 \
+  snp-printer-service
+```
+
+### Option 3: Unraid
 
 1. Go to Docker tab in Unraid
 2. Click "Add Container"
 3. Configure:
-   - **Repository**: Build from this Dockerfile or push to Docker Hub
+   - **Repository**: `ghcr.io/brendongl/snp-ticket-printer:latest` (or build locally)
    - **Network Type**: `bridge` (or `host` for easier discovery)
    - **Port**: `5000:5000`
-   - **Environment Variables**: Set `NETWORK_HOST` to your printer IP
-
-### Option 3: Build and Push to Docker Hub
-
-```bash
-# Build image
-docker build -t yourusername/snp-printer-service:latest .
-
-# Push to Docker Hub
-docker push yourusername/snp-printer-service:latest
-```
-
-Then pull from Docker Hub in Unraid.
+   - **Path**: `/app/data` → `/mnt/user/appdata/snp-printer/`
+   - **Environment Variables**: Configure as needed
 
 ## Troubleshooting
 
 ### Printer Not Reachable
 
-1. Verify printer IP: `ping 192.168.1.xxx`
-2. Check port is open: `nc -zv 192.168.1.xxx 9100`
-3. Ensure printer is on same network as Unraid server
+1. Verify printer IP: `ping 192.168.50.xxx`
+2. Check port is open: `nc -zv 192.168.50.xxx 9100`
+3. Ensure printer is on same network as server
 4. Try `network_mode: host` in docker-compose.yml
 
 ### Print Quality Issues
@@ -145,21 +188,24 @@ Then pull from Docker Hub in Unraid.
 
 ### Connection Timeout
 
-- Increase timeout in `get_printer()` function
+- Increase timeout in printer settings
 - Check network congestion
 - Verify printer isn't in sleep mode
 
-## Next Steps (Coming Soon)
+### Notifications Not Working
 
-- [ ] API key authentication
-- [ ] Rate limiting
-- [ ] Network restriction (WiFi-only)
-- [ ] QR code printing
-- [ ] Logo/image support
-- [ ] Integration with snp-site cron jobs
-- [ ] Tailscale VPN configuration
+- Verify Discord webhook URL is correct (test with curl)
+- Check Pushover credentials
+- View container logs: `docker-compose logs -f`
+
+## Integration with snp-site
+
+The admin page at `/admin/printer` in snp-site can connect to this service:
+
+1. Set `PRINTER_SERVICE_URL=http://your-unraid-ip:5000` in snp-site's `.env`
+2. Set `PRINTER_API_KEY` if authentication is enabled
+3. Access printer controls from the admin menu
 
 ## License
 
 MIT - Part of the Sip & Play cafe management system.
-

@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SNP Printer Service</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .status-online { background-color: #10b981; }
+        .status-offline { background-color: #ef4444; }
+        .status-unknown { background-color: #6b7280; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-3xl font-bold text-cyan-400">SNP Printer Service</h1>
+                <p class="text-gray-400 text-sm">v0.3.0 - Thermal Printer Management</p>
+            </div>
+            <div id="service-status" class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded-full status-unknown"></span>
+                <span class="text-sm text-gray-400">Checking...</span>
+            </div>
+        </div>
+
+        <!-- Configured Printers -->
+        <div class="bg-gray-800 rounded-xl p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Configured Printers</h2>
+                <button onclick="refreshPrinterStatus()" class="text-cyan-400 hover:text-cyan-300 text-sm flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+            <div id="printer-list" class="space-y-3">
+                <div class="text-gray-500 text-sm">Loading printers...</div>
+            </div>
+        </div>
+
+        <!-- Printer Discovery -->
+        <div class="bg-gray-800 rounded-xl p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Discover Printers</h2>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Subnet</label>
+                    <input type="text" id="scan-subnet" value="192.168.50"
+                           class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Start IP</label>
+                    <input type="number" id="scan-start" value="1" min="1" max="254"
+                           class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">End IP</label>
+                    <input type="number" id="scan-end" value="254" min="1" max="254"
+                           class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Port</label>
+                    <input type="number" id="scan-port" value="9100"
+                           class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                </div>
+            </div>
+            <button onclick="scanNetwork()" id="scan-btn"
+                    class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded-lg font-medium transition-colors">
+                Scan Network
+            </button>
+            <div id="scan-results" class="mt-4 hidden">
+                <div class="text-sm text-gray-400 mb-2">Found Printers:</div>
+                <div id="scan-results-list" class="space-y-2"></div>
+            </div>
+        </div>
+
+        <!-- Send Message -->
+        <div class="bg-gray-800 rounded-xl p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Send Message</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Printer</label>
+                    <select id="msg-printer" class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                        <option value="default">Default Printer</option>
+                    </select>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Title</label>
+                        <input type="text" id="msg-title" value="MESSAGE"
+                               class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Subtitle (optional)</label>
+                        <input type="text" id="msg-subtitle" placeholder="Optional subtitle"
+                               class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Message</label>
+                    <textarea id="msg-content" rows="4" placeholder="Enter your message..."
+                              class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none resize-none"></textarea>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="sendMessage()" class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded-lg font-medium transition-colors">
+                        Print Message
+                    </button>
+                    <button onclick="sendTestPrint()" class="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded-lg font-medium transition-colors">
+                        Test Print
+                    </button>
+                </div>
+                <div id="msg-result" class="hidden text-sm mt-2"></div>
+            </div>
+        </div>
+
+        <!-- Configuration -->
+        <div class="bg-gray-800 rounded-xl p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Configuration</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Add Printer -->
+                <div class="bg-gray-700/50 rounded-lg p-4">
+                    <h3 class="font-medium mb-3">Add Printer</h3>
+                    <div class="space-y-3">
+                        <input type="text" id="new-printer-name" placeholder="Printer name (e.g., kitchen)"
+                               class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        <input type="text" id="new-printer-host" placeholder="IP Address (e.g., 192.168.50.104)"
+                               class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        <input type="number" id="new-printer-port" value="9100" placeholder="Port"
+                               class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        <button onclick="addPrinter()" class="w-full bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                            Add Printer
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Notifications -->
+                <div class="bg-gray-700/50 rounded-lg p-4">
+                    <h3 class="font-medium mb-3">Notification Settings</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Discord Webhook URL</label>
+                            <input type="text" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..."
+                                   class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Pushover User Key</label>
+                            <input type="text" id="pushover-user" placeholder="Your Pushover user key"
+                                   class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Pushover App Token</label>
+                            <input type="text" id="pushover-token" placeholder="Your Pushover app token"
+                                   class="w-full bg-gray-700 rounded-lg px-3 py-2 text-white border border-gray-600 focus:border-cyan-400 focus:outline-none text-sm">
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="saveNotificationSettings()" class="flex-1 bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Save Settings
+                            </button>
+                            <button onclick="testNotifications()" class="flex-1 bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Test
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monitoring Status -->
+        <div class="bg-gray-800 rounded-xl p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Health Monitoring</h2>
+                <div class="flex items-center gap-2">
+                    <span id="monitoring-status" class="text-sm text-gray-400">Checking...</span>
+                    <button onclick="toggleMonitoring()" id="monitoring-toggle"
+                            class="bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-sm transition-colors">
+                        Enable
+                    </button>
+                </div>
+            </div>
+            <div class="text-sm text-gray-400">
+                <p>When enabled, the service will check printer status every 60 seconds.</p>
+                <p>If a printer goes offline, you'll receive notifications via configured channels.</p>
+            </div>
+            <div id="monitoring-log" class="mt-4 bg-gray-900 rounded-lg p-3 max-h-40 overflow-y-auto text-sm font-mono text-gray-400">
+                <div>Monitoring log will appear here...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API helper
+        async function api(endpoint, method = 'GET', body = null) {
+            const options = { method, headers: {} };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch(endpoint, options);
+            return res.json();
+        }
+
+        // Refresh printer status
+        async function refreshPrinterStatus() {
+            const list = document.getElementById('printer-list');
+            list.innerHTML = '<div class="text-gray-500 text-sm">Loading...</div>';
+
+            try {
+                const data = await api('/printer/status');
+                if (data.printers && data.printers.length > 0) {
+                    list.innerHTML = data.printers.map(p => `
+                        <div class="flex items-center justify-between bg-gray-700/50 rounded-lg p-3">
+                            <div class="flex items-center gap-3">
+                                <span class="w-3 h-3 rounded-full ${p.status === 'online' ? 'status-online' : 'status-offline'}"></span>
+                                <div>
+                                    <div class="font-medium">${p.name}</div>
+                                    <div class="text-sm text-gray-400">${p.host}:${p.port}</div>
+                                </div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="pingPrinter('${p.host}', ${p.port})"
+                                        class="text-cyan-400 hover:text-cyan-300 text-sm">Ping</button>
+                                <button onclick="sendTestToPrinter('${p.name}')"
+                                        class="text-green-400 hover:text-green-300 text-sm">Test</button>
+                                ${p.name !== 'default' ? `<button onclick="removePrinter('${p.name}')"
+                                        class="text-red-400 hover:text-red-300 text-sm">Remove</button>` : ''}
+                            </div>
+                        </div>
+                    `).join('');
+
+                    // Update printer dropdown
+                    const select = document.getElementById('msg-printer');
+                    select.innerHTML = data.printers.map(p =>
+                        `<option value="${p.name}">${p.name} (${p.host})</option>`
+                    ).join('');
+                } else {
+                    list.innerHTML = '<div class="text-gray-500 text-sm">No printers configured</div>';
+                }
+            } catch (e) {
+                list.innerHTML = '<div class="text-red-400 text-sm">Failed to load printers</div>';
+            }
+        }
+
+        // Scan network
+        async function scanNetwork() {
+            const btn = document.getElementById('scan-btn');
+            const results = document.getElementById('scan-results');
+            const resultsList = document.getElementById('scan-results-list');
+
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            results.classList.remove('hidden');
+            resultsList.innerHTML = '<div class="text-gray-500 text-sm animate-pulse-slow">Scanning network...</div>';
+
+            try {
+                const subnet = document.getElementById('scan-subnet').value;
+                const start = document.getElementById('scan-start').value;
+                const end = document.getElementById('scan-end').value;
+                const port = document.getElementById('scan-port').value;
+
+                const data = await api(`/printer/discover?subnet=${subnet}&start=${start}&end=${end}&port=${port}`);
+
+                if (data.found && data.found.length > 0) {
+                    resultsList.innerHTML = data.found.map(p => `
+                        <div class="flex items-center justify-between bg-gray-700/50 rounded-lg p-2">
+                            <span class="text-green-400">${p.host}:${p.port}</span>
+                            <button onclick="document.getElementById('new-printer-host').value='${p.host}'"
+                                    class="text-cyan-400 hover:text-cyan-300 text-sm">Use</button>
+                        </div>
+                    `).join('');
+                } else {
+                    resultsList.innerHTML = '<div class="text-gray-500 text-sm">No printers found in range</div>';
+                }
+            } catch (e) {
+                resultsList.innerHTML = '<div class="text-red-400 text-sm">Scan failed</div>';
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Scan Network';
+        }
+
+        // Ping printer
+        async function pingPrinter(host, port) {
+            try {
+                const data = await api(`/printer/ping?host=${host}&port=${port}`);
+                alert(data.reachable ? `${host} is ONLINE` : `${host} is OFFLINE`);
+            } catch (e) {
+                alert('Ping failed');
+            }
+        }
+
+        // Send message
+        async function sendMessage() {
+            const result = document.getElementById('msg-result');
+            result.classList.remove('hidden');
+            result.className = 'text-sm mt-2 text-gray-400';
+            result.textContent = 'Sending...';
+
+            try {
+                const data = await api('/print/message', 'POST', {
+                    printer: document.getElementById('msg-printer').value,
+                    title: document.getElementById('msg-title').value,
+                    subtitle: document.getElementById('msg-subtitle').value || undefined,
+                    message: document.getElementById('msg-content').value
+                });
+
+                result.className = data.success ? 'text-sm mt-2 text-green-400' : 'text-sm mt-2 text-red-400';
+                result.textContent = data.message || data.error || 'Done';
+            } catch (e) {
+                result.className = 'text-sm mt-2 text-red-400';
+                result.textContent = 'Failed to send';
+            }
+        }
+
+        // Send test print
+        async function sendTestPrint() {
+            const result = document.getElementById('msg-result');
+            result.classList.remove('hidden');
+            result.className = 'text-sm mt-2 text-gray-400';
+            result.textContent = 'Sending test...';
+
+            try {
+                const data = await api('/print/test', 'POST', {
+                    printer: document.getElementById('msg-printer').value
+                });
+
+                result.className = data.success ? 'text-sm mt-2 text-green-400' : 'text-sm mt-2 text-red-400';
+                result.textContent = data.message || data.error || 'Done';
+            } catch (e) {
+                result.className = 'text-sm mt-2 text-red-400';
+                result.textContent = 'Failed to send';
+            }
+        }
+
+        async function sendTestToPrinter(printerName) {
+            try {
+                const data = await api('/print/test', 'POST', { printer: printerName });
+                alert(data.success ? 'Test print sent!' : 'Failed: ' + (data.error || 'Unknown error'));
+            } catch (e) {
+                alert('Failed to send test print');
+            }
+        }
+
+        // Add printer
+        async function addPrinter() {
+            const name = document.getElementById('new-printer-name').value;
+            const host = document.getElementById('new-printer-host').value;
+            const port = document.getElementById('new-printer-port').value;
+
+            if (!name || !host) {
+                alert('Please enter printer name and IP address');
+                return;
+            }
+
+            try {
+                const data = await api('/config/printer', 'POST', { name, host, port: parseInt(port) });
+                if (data.success) {
+                    document.getElementById('new-printer-name').value = '';
+                    document.getElementById('new-printer-host').value = '';
+                    refreshPrinterStatus();
+                } else {
+                    alert('Failed to add printer: ' + (data.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Failed to add printer');
+            }
+        }
+
+        // Remove printer
+        async function removePrinter(name) {
+            if (!confirm(`Remove printer "${name}"?`)) return;
+
+            try {
+                const data = await api(`/config/printer/${name}`, 'DELETE');
+                refreshPrinterStatus();
+            } catch (e) {
+                alert('Failed to remove printer');
+            }
+        }
+
+        // Save notification settings
+        async function saveNotificationSettings() {
+            try {
+                const data = await api('/config/notifications', 'POST', {
+                    discord_webhook: document.getElementById('discord-webhook').value,
+                    pushover_user: document.getElementById('pushover-user').value,
+                    pushover_token: document.getElementById('pushover-token').value
+                });
+                alert(data.success ? 'Settings saved!' : 'Failed to save settings');
+            } catch (e) {
+                alert('Failed to save settings');
+            }
+        }
+
+        // Test notifications
+        async function testNotifications() {
+            try {
+                const data = await api('/notifications/test', 'POST');
+                alert(data.message || 'Test notifications sent!');
+            } catch (e) {
+                alert('Failed to send test notifications');
+            }
+        }
+
+        // Toggle monitoring
+        async function toggleMonitoring() {
+            const btn = document.getElementById('monitoring-toggle');
+            const status = document.getElementById('monitoring-status');
+            const isEnabled = btn.textContent === 'Disable';
+
+            try {
+                const data = await api('/monitoring/toggle', 'POST', { enabled: !isEnabled });
+                btn.textContent = data.enabled ? 'Disable' : 'Enable';
+                btn.className = data.enabled
+                    ? 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm transition-colors'
+                    : 'bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-sm transition-colors';
+                status.textContent = data.enabled ? 'Active' : 'Disabled';
+                status.className = data.enabled ? 'text-sm text-green-400' : 'text-sm text-gray-400';
+            } catch (e) {
+                alert('Failed to toggle monitoring');
+            }
+        }
+
+        // Load notification settings
+        async function loadNotificationSettings() {
+            try {
+                const data = await api('/config/notifications');
+                if (data.discord_webhook) document.getElementById('discord-webhook').value = data.discord_webhook;
+                if (data.pushover_user) document.getElementById('pushover-user').value = data.pushover_user;
+                if (data.pushover_token) document.getElementById('pushover-token').value = data.pushover_token;
+            } catch (e) {
+                console.error('Failed to load notification settings');
+            }
+        }
+
+        // Check monitoring status
+        async function checkMonitoringStatus() {
+            try {
+                const data = await api('/monitoring/status');
+                const btn = document.getElementById('monitoring-toggle');
+                const status = document.getElementById('monitoring-status');
+
+                btn.textContent = data.enabled ? 'Disable' : 'Enable';
+                btn.className = data.enabled
+                    ? 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm transition-colors'
+                    : 'bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-sm transition-colors';
+                status.textContent = data.enabled ? 'Active' : 'Disabled';
+                status.className = data.enabled ? 'text-sm text-green-400' : 'text-sm text-gray-400';
+            } catch (e) {
+                console.error('Failed to check monitoring status');
+            }
+        }
+
+        // Update service status
+        async function updateServiceStatus() {
+            try {
+                const data = await api('/health');
+                const status = document.getElementById('service-status');
+                status.innerHTML = `
+                    <span class="w-3 h-3 rounded-full ${data.status === 'healthy' ? 'status-online' : 'status-offline'}"></span>
+                    <span class="text-sm ${data.status === 'healthy' ? 'text-green-400' : 'text-red-400'}">${data.status}</span>
+                `;
+            } catch (e) {
+                const status = document.getElementById('service-status');
+                status.innerHTML = `
+                    <span class="w-3 h-3 rounded-full status-offline"></span>
+                    <span class="text-sm text-red-400">offline</span>
+                `;
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            updateServiceStatus();
+            refreshPrinterStatus();
+            loadNotificationSettings();
+            checkMonitoringStatus();
+
+            // Refresh status every 30 seconds
+            setInterval(updateServiceStatus, 30000);
+        });
+    </script>
+</body>
+</html>

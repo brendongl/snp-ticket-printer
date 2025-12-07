@@ -10,22 +10,28 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
+    volumes:
+      # Persist configuration (printers, notifications, monitoring settings)
+      - ./data:/app/data
     environment:
-      # Printer Configuration
-      - PRINTER_TYPE=network
+      # Default Printer
       - NETWORK_HOST=${NETWORK_HOST:-192.168.50.103}
       - NETWORK_PORT=${NETWORK_PORT:-9100}
 
-      # Optional: Second printer
-      # - PRINTER_2_HOST=192.168.50.104
-      # - PRINTER_2_PORT=9100
-
-      # Server Configuration
+      # Server
       - HOST=0.0.0.0
       - PORT=5000
       - DEBUG=${DEBUG:-false}
 
-      # Security (set REQUIRE_AUTH=true for production)
+      # Config persistence
+      - CONFIG_FILE=/app/data/config.json
+
+      # Notifications (optional - can also set via web UI)
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY:-}
+      - PUSHOVER_APP_TOKEN=${PUSHOVER_APP_TOKEN:-}
+
+      # Security
       - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
       - API_KEY_SNP_SITE=${API_KEY_SNP_SITE:-dev-key-snp-site}
       - API_KEY_ADMIN=${API_KEY_ADMIN:-dev-key-admin}

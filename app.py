@@ -1,16 +1,18 @@
 """
-SNP Printer Service v0.2.0
+SNP Printer Service v0.3.0
 Flask service for printing to network ESC/POS thermal printers.
-Designed for Unraid deployment with webhook/API support.
+Features: Web UI, discovery, monitoring, Discord/Pushover notifications.
 """
 
 import os
+import json
 import socket
-import hashlib
 import time
+import threading
+import requests
 from datetime import datetime
 from functools import wraps
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, render_template
 from escpos.printer import Network
 
 app = Flask(__name__)
@@ -19,10 +21,13 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-PRINTER_TYPE = os.getenv('PRINTER_TYPE', 'network')
-NETWORK_HOST = os.getenv('NETWORK_HOST', '192.168.50.103')
-NETWORK_PORT = int(os.getenv('NETWORK_PORT', '9100'))
+VERSION = "0.3.0"
+CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
+
+# Default printer (can be overridden by config)
+DEFAULT_NETWORK_HOST = os.getenv('NETWORK_HOST', '192.168.50.103')
+DEFAULT_NETWORK_PORT = int(os.getenv('NETWORK_PORT', '9100'))
 
 # API Security
 API_KEYS = {
@@ -31,21 +36,63 @@ API_KEYS = {
 }
 REQUIRE_AUTH = os.getenv('REQUIRE_AUTH', 'false').lower() == 'true'
 
-# Rate limiting (simple in-memory)
-RATE_LIMIT_WINDOW = 60  # seconds
-RATE_LIMIT_MAX = 10  # requests per window
+# Rate limiting
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 10
 rate_limit_store = {}
 
-# Multiple printer support
-PRINTERS = {
-    'default': {'host': NETWORK_HOST, 'port': NETWORK_PORT},
-    # Add more printers here via env vars
-}
-if os.getenv('PRINTER_2_HOST'):
-    PRINTERS['printer2'] = {
-        'host': os.getenv('PRINTER_2_HOST'),
-        'port': int(os.getenv('PRINTER_2_PORT', '9100'))
+# Runtime configuration (loaded from file or defaults)
+config = {
+    'printers': {
+        'default': {'host': DEFAULT_NETWORK_HOST, 'port': DEFAULT_NETWORK_PORT}
+    },
+    'notifications': {
+        'discord_webhook': os.getenv('DISCORD_WEBHOOK_URL', ''),
+        'pushover_user': os.getenv('PUSHOVER_USER_KEY', ''),
+        'pushover_token': os.getenv('PUSHOVER_APP_TOKEN', ''),
+    },
+    'monitoring': {
+        'enabled': False,
+        'interval': 60,  # seconds
+        'last_check': None,
+        'printer_states': {}  # Track online/offline state for notifications
     }
+}
+
+# Monitoring thread
+monitoring_thread = None
+monitoring_stop_event = threading.Event()
+
+
+# =============================================================================
+# CONFIG PERSISTENCE
+# =============================================================================
+
+def load_config():
+    """Load configuration from file."""
+    global config
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                saved = json.load(f)
+                # Merge with defaults
+                config['printers'].update(saved.get('printers', {}))
+                config['notifications'].update(saved.get('notifications', {}))
+                config['monitoring'].update(saved.get('monitoring', {}))
+                print(f"[CONFIG] Loaded from {CONFIG_FILE}")
+    except Exception as e:
+        print(f"[CONFIG] Failed to load config: {e}")
+
+
+def save_config():
+    """Save configuration to file."""
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2, default=str)
+        print(f"[CONFIG] Saved to {CONFIG_FILE}")
+    except Exception as e:
+        print(f"[CONFIG] Failed to save config: {e}")
 
 
 # =============================================================================
@@ -54,9 +101,11 @@ if os.getenv('PRINTER_2_HOST'):
 
 def get_printer(printer_id='default'):
     """Get a network printer connection."""
-    config = PRINTERS.get(printer_id, PRINTERS['default'])
+    printer_config = config['printers'].get(printer_id, config['printers'].get('default'))
+    if not printer_config:
+        return None
     try:
-        printer = Network(config['host'], port=config['port'], timeout=10)
+        printer = Network(printer_config['host'], port=printer_config['port'], timeout=10)
         return printer
     except Exception as e:
         print(f"[ERROR] Failed to connect to printer {printer_id}: {e}")
@@ -68,7 +117,7 @@ def check_printer_reachable(host, port=9100, timeout=3):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
+        result = sock.connect_ex((host, int(port)))
         sock.close()
         return result == 0
     except Exception:
@@ -76,27 +125,144 @@ def check_printer_reachable(host, port=9100, timeout=3):
 
 
 def check_rate_limit(key):
-    """Simple rate limiting. Returns True if allowed, False if rate limited."""
+    """Simple rate limiting."""
     now = time.time()
     window_start = now - RATE_LIMIT_WINDOW
 
-    # Clean old entries
     if key in rate_limit_store:
         rate_limit_store[key] = [t for t in rate_limit_store[key] if t > window_start]
     else:
         rate_limit_store[key] = []
 
-    # Check limit
     if len(rate_limit_store[key]) >= RATE_LIMIT_MAX:
         return False
 
-    # Record this request
     rate_limit_store[key].append(now)
     return True
 
 
 # =============================================================================
-# AUTHENTICATION DECORATOR
+# NOTIFICATIONS
+# =============================================================================
+
+def send_discord_notification(message, title="SNP Printer Alert"):
+    """Send notification via Discord webhook."""
+    webhook_url = config['notifications'].get('discord_webhook')
+    if not webhook_url:
+        return False
+
+    try:
+        payload = {
+            "embeds": [{
+                "title": title,
+                "description": message,
+                "color": 15158332,  # Red color
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+        }
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        return response.status_code == 204
+    except Exception as e:
+        print(f"[DISCORD] Failed to send notification: {e}")
+        return False
+
+
+def send_pushover_notification(message, title="SNP Printer Alert"):
+    """Send notification via Pushover."""
+    user_key = config['notifications'].get('pushover_user')
+    app_token = config['notifications'].get('pushover_token')
+
+    if not user_key or not app_token:
+        return False
+
+    try:
+        response = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": app_token,
+                "user": user_key,
+                "title": title,
+                "message": message,
+                "priority": 1  # High priority
+            },
+            timeout=10
+        )
+        return response.status_code == 200
+    except Exception as e:
+        print(f"[PUSHOVER] Failed to send notification: {e}")
+        return False
+
+
+def send_notification(message, title="SNP Printer Alert"):
+    """Send notification via all configured channels."""
+    results = []
+
+    if config['notifications'].get('discord_webhook'):
+        results.append(('discord', send_discord_notification(message, title)))
+
+    if config['notifications'].get('pushover_user') and config['notifications'].get('pushover_token'):
+        results.append(('pushover', send_pushover_notification(message, title)))
+
+    return results
+
+
+# =============================================================================
+# MONITORING
+# =============================================================================
+
+def monitoring_loop():
+    """Background monitoring loop."""
+    while not monitoring_stop_event.is_set():
+        if config['monitoring']['enabled']:
+            check_all_printers()
+        monitoring_stop_event.wait(config['monitoring']['interval'])
+
+
+def check_all_printers():
+    """Check all printers and send notifications if status changed."""
+    config['monitoring']['last_check'] = datetime.now().isoformat()
+
+    for name, printer_config in config['printers'].items():
+        host = printer_config['host']
+        port = printer_config['port']
+        is_online = check_printer_reachable(host, port)
+
+        prev_state = config['monitoring']['printer_states'].get(name)
+        config['monitoring']['printer_states'][name] = is_online
+
+        # Send notification if state changed to offline
+        if prev_state is True and is_online is False:
+            message = f"Printer **{name}** ({host}:{port}) is now OFFLINE!"
+            send_notification(message, "Printer Offline Alert")
+            print(f"[MONITOR] {name} went OFFLINE - notification sent")
+
+        # Send notification if state changed to online (recovered)
+        elif prev_state is False and is_online is True:
+            message = f"Printer **{name}** ({host}:{port}) is back ONLINE."
+            send_notification(message, "Printer Recovered")
+            print(f"[MONITOR] {name} is back ONLINE - notification sent")
+
+
+def start_monitoring():
+    """Start the monitoring thread."""
+    global monitoring_thread
+    if monitoring_thread and monitoring_thread.is_alive():
+        return
+
+    monitoring_stop_event.clear()
+    monitoring_thread = threading.Thread(target=monitoring_loop, daemon=True)
+    monitoring_thread.start()
+    print("[MONITOR] Started monitoring thread")
+
+
+def stop_monitoring():
+    """Stop the monitoring thread."""
+    monitoring_stop_event.set()
+    print("[MONITOR] Stopped monitoring thread")
+
+
+# =============================================================================
+# AUTH DECORATOR
 # =============================================================================
 
 def require_api_key(f):
@@ -106,16 +272,13 @@ def require_api_key(f):
         if not REQUIRE_AUTH:
             return f(*args, **kwargs)
 
-        api_key = request.headers.get('X-API-Key')
-        if not api_key:
-            api_key = request.args.get('api_key')
+        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
 
         if not api_key or api_key not in API_KEYS.values():
-            return jsonify({'error': 'Unauthorized - Invalid or missing API key'}), 401
+            return jsonify({'error': 'Unauthorized'}), 401
 
-        # Rate limiting by API key
         if not check_rate_limit(api_key):
-            return jsonify({'error': 'Rate limit exceeded. Try again later.'}), 429
+            return jsonify({'error': 'Rate limit exceeded'}), 429
 
         return f(*args, **kwargs)
     return decorated
@@ -126,7 +289,6 @@ def require_api_key(f):
 # =============================================================================
 
 def print_header(printer, title="SIP & PLAY"):
-    """Print standard header."""
     printer.set(align='center', bold=True, width=2, height=2)
     printer.text(f"{title}\n")
     printer.set(align='center', bold=False, width=1, height=1)
@@ -134,7 +296,6 @@ def print_header(printer, title="SIP & PLAY"):
 
 
 def print_footer(printer, cut=True):
-    """Print standard footer."""
     printer.set(align='center', width=1, height=1)
     printer.text("-" * 32 + "\n")
     printer.text(f"{datetime.now().strftime('%H:%M %d/%m/%Y')}\n")
@@ -144,193 +305,107 @@ def print_footer(printer, cut=True):
 
 
 def print_message(printer, title, message, subtitle=None):
-    """Print a simple message."""
     print_header(printer)
-
     printer.set(align='center', bold=True)
     printer.text(f"{title}\n")
-
     if subtitle:
         printer.set(bold=False)
         printer.text(f"{subtitle}\n")
-
     printer.text("=" * 32 + "\n\n")
-
     printer.set(align='left', bold=False)
-    # Handle multi-line messages
     for line in message.split('\n'):
         printer.text(f"{line}\n")
     printer.text("\n")
-
     print_footer(printer)
 
 
 def print_reminder(printer, reminder_type, staff_name, message, action_url=None):
-    """Print a staff reminder with optional QR code."""
     print_header(printer)
-
     printer.set(align='center', bold=True)
-    printer.text(f"REMINDER\n")
+    printer.text("REMINDER\n")
     printer.set(bold=False)
     printer.text(f"{reminder_type}\n")
     printer.text("=" * 32 + "\n\n")
-
     printer.set(align='left')
     if staff_name:
         printer.text(f"Staff: {staff_name}\n")
     printer.text(f"Time: {datetime.now().strftime('%H:%M')}\n\n")
-
     printer.text("-" * 32 + "\n")
     for line in message.split('\n'):
         printer.text(f"{line}\n")
     printer.text("-" * 32 + "\n\n")
-
     if action_url:
         printer.set(align='center')
         printer.text("Scan to take action:\n")
         printer.qr(action_url, size=6)
         printer.text("\n")
-
-    print_footer(printer)
-
-
-def print_task(printer, task_title, task_description, due_time=None, priority=None, assignee=None):
-    """Print a task notification."""
-    print_header(printer)
-
-    printer.set(align='center', bold=True)
-    printer.text("TASK\n")
-
-    if priority:
-        priority_display = {"high": "!!!", "medium": "!!", "low": "!"}.get(priority.lower(), "")
-        printer.text(f"{priority_display} {priority.upper()} {priority_display}\n")
-
-    printer.set(bold=False)
-    printer.text("=" * 32 + "\n\n")
-
-    printer.set(align='left', bold=True)
-    printer.text(f"{task_title}\n")
-    printer.set(bold=False)
-    printer.text("-" * 32 + "\n")
-
-    if task_description:
-        for line in task_description.split('\n'):
-            printer.text(f"{line}\n")
-        printer.text("\n")
-
-    if assignee:
-        printer.text(f"Assigned: {assignee}\n")
-    if due_time:
-        printer.text(f"Due: {due_time}\n")
-
-    printer.text("\n")
-    print_footer(printer)
-
-
-def print_order(printer, order_items, table_number=None, notes=None):
-    """Print an order ticket (for future cafe integration)."""
-    print_header(printer, "ORDER")
-
-    if table_number:
-        printer.set(align='center', bold=True, width=2, height=2)
-        printer.text(f"TABLE {table_number}\n")
-        printer.set(width=1, height=1, bold=False)
-
-    printer.text("=" * 32 + "\n\n")
-
-    printer.set(align='left')
-    for item in order_items:
-        qty = item.get('qty', 1)
-        name = item.get('name', 'Item')
-        printer.set(bold=True)
-        printer.text(f"{qty}x {name}\n")
-        if item.get('notes'):
-            printer.set(bold=False)
-            printer.text(f"   -> {item['notes']}\n")
-
-    if notes:
-        printer.text("\n" + "-" * 32 + "\n")
-        printer.set(bold=True)
-        printer.text("NOTES:\n")
-        printer.set(bold=False)
-        printer.text(f"{notes}\n")
-
-    printer.text("\n")
     print_footer(printer)
 
 
 # =============================================================================
-# API ENDPOINTS - Info & Health
+# WEB UI
 # =============================================================================
 
 @app.route('/')
 def index():
-    """Root endpoint with service info."""
-    return jsonify({
-        "service": "SNP Printer Service",
-        "version": "0.2.0",
-        "status": "running",
-        "auth_required": REQUIRE_AUTH,
-        "endpoints": {
-            "GET /health": "Service health check",
-            "GET /printer/status": "Check printer status",
-            "GET /printer/discover": "Discover printers on network",
-            "POST /print/test": "Send test print",
-            "POST /print/message": "Print custom message",
-            "POST /print/reminder": "Print staff reminder",
-            "POST /print/task": "Print task notification",
-            "POST /webhook/message": "Webhook for messages",
-            "POST /webhook/reminder": "Webhook for reminders",
-        }
-    })
+    """Serve the web UI."""
+    return render_template('index.html')
 
+
+# =============================================================================
+# API - Health & Status
+# =============================================================================
 
 @app.route('/health')
 def health():
     """Health check endpoint."""
-    printer_status = check_printer_reachable(NETWORK_HOST, NETWORK_PORT)
     return jsonify({
         "status": "healthy",
+        "version": VERSION,
         "timestamp": datetime.now().isoformat(),
-        "printer": {
-            "host": NETWORK_HOST,
-            "port": NETWORK_PORT,
-            "reachable": printer_status
-        }
     })
 
 
 @app.route('/printer/status')
 def printer_status():
-    """Check all configured printers."""
+    """Get status of all configured printers."""
     results = []
-    for name, config in PRINTERS.items():
-        reachable = check_printer_reachable(config['host'], config['port'])
+    for name, printer_config in config['printers'].items():
+        reachable = check_printer_reachable(printer_config['host'], printer_config['port'])
         results.append({
             "name": name,
-            "host": config['host'],
-            "port": config['port'],
+            "host": printer_config['host'],
+            "port": printer_config['port'],
             "status": "online" if reachable else "offline"
         })
+    return jsonify({"printers": results, "checked_at": datetime.now().isoformat()})
 
-    return jsonify({
-        "printers": results,
-        "checked_at": datetime.now().isoformat()
-    })
+
+@app.route('/printer/ping')
+def ping_printer():
+    """Ping a specific printer."""
+    host = request.args.get('host')
+    port = request.args.get('port', 9100)
+
+    if not host:
+        return jsonify({"error": "Host is required"}), 400
+
+    reachable = check_printer_reachable(host, int(port))
+    return jsonify({"host": host, "port": port, "reachable": reachable})
 
 
 @app.route('/printer/discover')
-def discover():
-    """Discover printers on the local network."""
+def discover_printers():
+    """Discover printers on the network."""
     subnet = request.args.get('subnet', '192.168.50')
     port = int(request.args.get('port', '9100'))
     start = int(request.args.get('start', '1'))
-    end = min(int(request.args.get('end', '50')), 254)
+    end = min(int(request.args.get('end', '254')), 254)
 
     found = []
     for i in range(start, end + 1):
         host = f"{subnet}.{i}"
-        if check_printer_reachable(host, port, timeout=0.5):
+        if check_printer_reachable(host, port, timeout=0.3):
             found.append({"host": host, "port": port})
 
     return jsonify({
@@ -342,7 +417,7 @@ def discover():
 
 
 # =============================================================================
-# API ENDPOINTS - Print Operations
+# API - Print Operations
 # =============================================================================
 
 @app.route('/print/test', methods=['POST'])
@@ -357,7 +432,7 @@ def api_print_test():
         return jsonify({"success": False, "error": "Printer not available"}), 503
 
     try:
-        print_message(printer, "TEST PRINT", "If you see this, the printer is working!\n\nSNP Printer Service v0.2.0")
+        print_message(printer, "TEST PRINT", f"Printer: {printer_id}\nService: v{VERSION}\n\nIf you see this, it works!")
         printer.close()
         return jsonify({"success": True, "message": "Test print sent"})
     except Exception as e:
@@ -367,15 +442,7 @@ def api_print_test():
 @app.route('/print/message', methods=['POST'])
 @require_api_key
 def api_print_message():
-    """
-    Print a custom message.
-    Body: {
-        "title": "MESSAGE TITLE",
-        "message": "The message content",
-        "subtitle": "Optional subtitle",
-        "printer": "default"
-    }
-    """
+    """Print a custom message."""
     data = request.get_json()
     if not data or not data.get('message'):
         return jsonify({"success": False, "error": "Message is required"}), 400
@@ -401,16 +468,7 @@ def api_print_message():
 @app.route('/print/reminder', methods=['POST'])
 @require_api_key
 def api_print_reminder():
-    """
-    Print a staff reminder.
-    Body: {
-        "type": "CLOCK OUT",
-        "staff": "John",
-        "message": "Your shift ends in 15 minutes",
-        "action_url": "https://sipnplay.cafe/staff/clock-in",
-        "printer": "default"
-    }
-    """
+    """Print a staff reminder."""
     data = request.get_json()
     if not data or not data.get('message'):
         return jsonify({"success": False, "error": "Message is required"}), 400
@@ -434,92 +492,128 @@ def api_print_reminder():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/print/task', methods=['POST'])
-@require_api_key
-def api_print_task():
-    """
-    Print a task notification.
-    Body: {
-        "title": "Clean espresso machine",
-        "description": "Weekly deep clean required",
-        "due": "17:00",
-        "priority": "high",
-        "assignee": "John",
-        "printer": "default"
-    }
-    """
+# =============================================================================
+# API - Configuration
+# =============================================================================
+
+@app.route('/config/printer', methods=['POST'])
+def add_printer():
+    """Add a new printer."""
     data = request.get_json()
-    if not data or not data.get('title'):
-        return jsonify({"success": False, "error": "Title is required"}), 400
+    if not data or not data.get('name') or not data.get('host'):
+        return jsonify({"success": False, "error": "Name and host are required"}), 400
 
-    printer_id = data.get('printer', 'default')
-    printer = get_printer(printer_id)
-    if not printer:
-        return jsonify({"success": False, "error": "Printer not available"}), 503
+    name = data['name'].lower().replace(' ', '_')
+    config['printers'][name] = {
+        'host': data['host'],
+        'port': int(data.get('port', 9100))
+    }
+    save_config()
+    return jsonify({"success": True, "message": f"Printer '{name}' added"})
 
-    try:
-        print_task(
-            printer,
-            task_title=data['title'],
-            task_description=data.get('description', ''),
-            due_time=data.get('due'),
-            priority=data.get('priority'),
-            assignee=data.get('assignee')
-        )
-        printer.close()
-        return jsonify({"success": True, "message": "Task printed"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/config/printer/<name>', methods=['DELETE'])
+def remove_printer(name):
+    """Remove a printer."""
+    if name == 'default':
+        return jsonify({"success": False, "error": "Cannot remove default printer"}), 400
+
+    if name in config['printers']:
+        del config['printers'][name]
+        save_config()
+        return jsonify({"success": True, "message": f"Printer '{name}' removed"})
+
+    return jsonify({"success": False, "error": "Printer not found"}), 404
+
+
+@app.route('/config/notifications', methods=['GET', 'POST'])
+def notification_settings():
+    """Get or update notification settings."""
+    if request.method == 'GET':
+        # Return settings (mask sensitive data)
+        return jsonify({
+            'discord_webhook': config['notifications'].get('discord_webhook', ''),
+            'pushover_user': config['notifications'].get('pushover_user', ''),
+            'pushover_token': '***' if config['notifications'].get('pushover_token') else '',
+        })
+
+    data = request.get_json() or {}
+    if 'discord_webhook' in data:
+        config['notifications']['discord_webhook'] = data['discord_webhook']
+    if 'pushover_user' in data:
+        config['notifications']['pushover_user'] = data['pushover_user']
+    if 'pushover_token' in data and data['pushover_token'] != '***':
+        config['notifications']['pushover_token'] = data['pushover_token']
+
+    save_config()
+    return jsonify({"success": True, "message": "Notification settings saved"})
+
+
+@app.route('/notifications/test', methods=['POST'])
+def test_notifications():
+    """Send test notifications."""
+    results = send_notification("This is a test notification from SNP Printer Service.", "Test Notification")
+
+    if not results:
+        return jsonify({"success": False, "message": "No notification channels configured"})
+
+    successful = [r[0] for r in results if r[1]]
+    failed = [r[0] for r in results if not r[1]]
+
+    return jsonify({
+        "success": len(successful) > 0,
+        "message": f"Sent: {', '.join(successful) if successful else 'none'}. Failed: {', '.join(failed) if failed else 'none'}"
+    })
 
 
 # =============================================================================
-# WEBHOOK ENDPOINTS (Simpler interface for integrations)
+# API - Monitoring
+# =============================================================================
+
+@app.route('/monitoring/status')
+def monitoring_status():
+    """Get monitoring status."""
+    return jsonify({
+        "enabled": config['monitoring']['enabled'],
+        "interval": config['monitoring']['interval'],
+        "last_check": config['monitoring']['last_check'],
+        "printer_states": config['monitoring']['printer_states']
+    })
+
+
+@app.route('/monitoring/toggle', methods=['POST'])
+def toggle_monitoring():
+    """Enable or disable monitoring."""
+    data = request.get_json() or {}
+    enabled = data.get('enabled', not config['monitoring']['enabled'])
+
+    config['monitoring']['enabled'] = enabled
+    save_config()
+
+    if enabled:
+        start_monitoring()
+    else:
+        stop_monitoring()
+
+    return jsonify({"success": True, "enabled": enabled})
+
+
+# =============================================================================
+# WEBHOOKS (for external integrations)
 # =============================================================================
 
 @app.route('/webhook/message', methods=['POST'])
 @require_api_key
 def webhook_message():
-    """Simple webhook for printing messages. Same as /print/message."""
+    """Webhook for printing messages."""
     return api_print_message()
 
 
 @app.route('/webhook/reminder', methods=['POST'])
 @require_api_key
 def webhook_reminder():
-    """Simple webhook for printing reminders. Same as /print/reminder."""
+    """Webhook for printing reminders."""
     return api_print_reminder()
-
-
-@app.route('/webhook/clock-reminder', methods=['POST'])
-@require_api_key
-def webhook_clock_reminder():
-    """
-    Specialized webhook for clock-out reminders.
-    Body: {
-        "staff": "John",
-        "shift_end": "17:00"
-    }
-    """
-    data = request.get_json() or {}
-    staff = data.get('staff', 'Staff')
-    shift_end = data.get('shift_end', 'soon')
-
-    printer = get_printer()
-    if not printer:
-        return jsonify({"success": False, "error": "Printer not available"}), 503
-
-    try:
-        print_reminder(
-            printer,
-            reminder_type="CLOCK OUT",
-            staff_name=staff,
-            message=f"Your shift ends at {shift_end}.\n\nDon't forget to clock out!",
-            action_url="https://sipnplay.cafe/staff/clock-in"
-        )
-        printer.close()
-        return jsonify({"success": True, "message": "Clock reminder printed"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =============================================================================
@@ -530,21 +624,29 @@ if __name__ == '__main__':
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', '5000'))
 
+    # Load saved configuration
+    load_config()
+
     print(f"""
 ╔═══════════════════════════════════════════════════════════╗
-║           SNP PRINTER SERVICE v0.2.0                      ║
+║           SNP PRINTER SERVICE v{VERSION}                      ║
 ╠═══════════════════════════════════════════════════════════╣
-║  Server:      http://{host}:{port:<5}                          ║
-║  Printer:     {NETWORK_HOST}:{NETWORK_PORT:<5}                        ║
-║  Auth:        {'ENABLED' if REQUIRE_AUTH else 'DISABLED':<10}                             ║
-║  Debug:       {str(DEBUG):<10}                             ║
+║  Web UI:      http://{host}:{port}/                             ║
+║  Printers:    {len(config['printers'])} configured                            ║
+║  Monitoring:  {'ENABLED' if config['monitoring']['enabled'] else 'DISABLED'}                                  ║
+║  Auth:        {'ENABLED' if REQUIRE_AUTH else 'DISABLED'}                                   ║
 ╚═══════════════════════════════════════════════════════════╝
     """)
 
-    # Check printer on startup
-    if check_printer_reachable(NETWORK_HOST, NETWORK_PORT):
-        print(f"[OK] Printer at {NETWORK_HOST}:{NETWORK_PORT} is reachable")
-    else:
-        print(f"[WARN] Printer at {NETWORK_HOST}:{NETWORK_PORT} is NOT reachable")
+    # Start monitoring if enabled
+    if config['monitoring']['enabled']:
+        start_monitoring()
 
-    app.run(host=host, port=port, debug=DEBUG)
+    # Check default printer on startup
+    default_printer = config['printers'].get('default', {})
+    if check_printer_reachable(default_printer.get('host'), default_printer.get('port', 9100)):
+        print(f"[OK] Default printer at {default_printer.get('host')} is reachable")
+    else:
+        print(f"[WARN] Default printer at {default_printer.get('host')} is NOT reachable")
+
+    app.run(host=host, port=port, debug=DEBUG, threaded=True)
