@@ -21,13 +21,15 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
-# Default printer (can be overridden by config)
-DEFAULT_NETWORK_HOST = os.getenv('NETWORK_HOST', '192.168.50.103')
-DEFAULT_NETWORK_PORT = int(os.getenv('NETWORK_PORT', '9100'))
+# Default printers (can be overridden by config)
+DEFAULT_PRINTERS = {
+    'pos1': {'host': '192.168.50.103', 'port': 9100, 'name': 'POS Printer 1'},
+    'pos2': {'host': '192.168.50.200', 'port': 9100, 'name': 'POS Printer 2 (Q80C)'},
+}
 
 # API Security
 API_KEYS = {
@@ -43,9 +45,7 @@ rate_limit_store = {}
 
 # Runtime configuration (loaded from file or defaults)
 config = {
-    'printers': {
-        'default': {'host': DEFAULT_NETWORK_HOST, 'port': DEFAULT_NETWORK_PORT}
-    },
+    'printers': DEFAULT_PRINTERS.copy(),
     'notifications': {
         'discord_webhook': os.getenv('DISCORD_WEBHOOK_URL', ''),
         'pushover_user': os.getenv('PUSHOVER_USER_KEY', ''),
@@ -99,9 +99,13 @@ def save_config():
 # HELPERS
 # =============================================================================
 
-def get_printer(printer_id='default'):
+def get_printer(printer_id='pos1'):
     """Get a network printer connection."""
-    printer_config = config['printers'].get(printer_id, config['printers'].get('default'))
+    printer_config = config['printers'].get(printer_id)
+    # Fallback to first available printer if requested one not found
+    if not printer_config and config['printers']:
+        printer_id = list(config['printers'].keys())[0]
+        printer_config = config['printers'][printer_id]
     if not printer_config:
         return None
     try:
@@ -642,11 +646,15 @@ if __name__ == '__main__':
     if config['monitoring']['enabled']:
         start_monitoring()
 
-    # Check default printer on startup
-    default_printer = config['printers'].get('default', {})
-    if check_printer_reachable(default_printer.get('host'), default_printer.get('port', 9100)):
-        print(f"[OK] Default printer at {default_printer.get('host')} is reachable")
-    else:
-        print(f"[WARN] Default printer at {default_printer.get('host')} is NOT reachable")
+    # Check all printers on startup
+    print("\n[STARTUP] Checking printer connectivity...")
+    for printer_name, printer_cfg in config['printers'].items():
+        printer_host = printer_cfg.get('host')
+        printer_port = printer_cfg.get('port', 9100)
+        display_name = printer_cfg.get('name', printer_name)
+        if check_printer_reachable(printer_host, printer_port):
+            print(f"  [OK] {display_name} ({printer_host}:{printer_port}) - ONLINE")
+        else:
+            print(f"  [WARN] {display_name} ({printer_host}:{printer_port}) - OFFLINE")
 
     app.run(host=host, port=port, debug=DEBUG, threaded=True)

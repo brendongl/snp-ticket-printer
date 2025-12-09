@@ -14,10 +14,6 @@ services:
       # Persist configuration (printers, notifications, monitoring settings)
       - ./data:/app/data
     environment:
-      # Default Printer
-      - NETWORK_HOST=${NETWORK_HOST:-192.168.50.103}
-      - NETWORK_PORT=${NETWORK_PORT:-9100}
-
       # Server
       - HOST=0.0.0.0
       - PORT=5000

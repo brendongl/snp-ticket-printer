@@ -93,13 +93,22 @@ Open `http://localhost:5000` in your browser to access the management interface.
 ### Example: Print Custom Message
 
 ```bash
-curl -X POST http://localhost:5000/api/print \
+# Print to POS Printer 1
+curl -X POST http://localhost:5000/print/message \
   -H "Content-Type: application/json" \
   -d '{
-    "printer": "default",
-    "template": "message",
+    "printer": "pos1",
     "title": "REMINDER",
     "message": "Dont forget to clock out!"
+  }'
+
+# Print to POS Printer 2 (Xprinter Q80C)
+curl -X POST http://localhost:5000/print/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "printer": "pos2",
+    "title": "KITCHEN",
+    "message": "Order ready for pickup!"
   }'
 ```
 
@@ -109,13 +118,18 @@ curl -X POST http://localhost:5000/api/print \
 curl "http://localhost:5000/api/discover?subnet=192.168.50&start=1&end=254"
 ```
 
-## Environment Variables
+## Pre-configured Printers
 
-### Printer Configuration
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NETWORK_HOST` | `192.168.50.103` | Default printer IP address |
-| `NETWORK_PORT` | `9100` | Printer port (standard ESC/POS) |
+The service comes with two pre-configured printers for Sip & Play:
+
+| ID | IP Address | Name | Description |
+|----|------------|------|-------------|
+| `pos1` | `192.168.50.103` | POS Printer 1 | Main POS printer |
+| `pos2` | `192.168.50.200` | POS Printer 2 (Q80C) | Xprinter Q80C |
+
+Additional printers can be added via the web UI or API.
+
+## Environment Variables
 
 ### Server Configuration
 | Variable | Default | Description |
