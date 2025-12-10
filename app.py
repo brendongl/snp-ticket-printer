@@ -28,7 +28,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -389,98 +389,109 @@ def print_message(printer, title, message, subtitle=None, beep=True):
     print_footer(printer, beep=beep)
 
 
-def print_booking(printer, booking, beep=True):
-    """Print a booking ticket with all available fields, plus a table marker page."""
+def print_booking(printer, booking, beep=True, name_only=False):
+    """Print a booking ticket with all available fields, plus a table marker page.
 
-    # === PAGE 1: Booking Details ===
-    printer.set(align='center', bold=True, width=1, height=1)
-    printer.text("=" * 32 + "\n")
-    printer.set(width=2, height=2)
-    printer.text("BOOKING\n")
-    printer.set(width=1, height=1)
-    printer.text("=" * 32 + "\n\n")
+    Args:
+        printer: The printer instance
+        booking: Booking data dictionary
+        beep: Whether to beep after printing
+        name_only: If True, only print page 2 (name ticket for table)
+    """
 
-    printer.set(align='left', bold=False)
-
-    # Extract field values
+    # Extract field values needed for page 2 (always needed)
     name = booking.get('customer_name') or booking.get('name') or ''
-    phone = booking.get('phone') or booking.get('customer_phone') or ''
-    email = booking.get('email') or booking.get('customer_email') or ''
-    date = booking.get('date') or ''
-    time_val = booking.get('time') or booking.get('start_time') or ''
-    end_time = booking.get('end_time') or ''
     party_size = booking.get('party_size') or booking.get('guests') or ''
-    booking_type = booking.get('booking_type') or booking.get('type') or ''
-    table = booking.get('table') or booking.get('table_number') or ''
-    room = booking.get('room') or ''
-    duration = booking.get('duration') or ''
-    status = booking.get('status') or ''
-    source = booking.get('source') or ''
-    deposit = booking.get('deposit') or ''
-    total = booking.get('total') or booking.get('amount') or ''
+    time_val = booking.get('time') or booking.get('start_time') or ''
 
-    # Print fields in pairs (side by side where possible)
-    def print_field_pair(label1, val1, label2=None, val2=None):
-        if val1 and str(val1).strip():
-            printer.set(bold=True)
-            printer.text(f"{label1}: ")
-            printer.set(bold=False)
-            printer.text(f"{val1}")
-            if label2 and val2 and str(val2).strip():
-                printer.text(" | ")
+    # Skip page 1 if name_only is True
+    if not name_only:
+        # === PAGE 1: Booking Details ===
+        printer.set(align='center', bold=True, width=1, height=1)
+        printer.text("=" * 32 + "\n")
+        printer.set(width=2, height=2)
+        printer.text("BOOKING\n")
+        printer.set(width=1, height=1)
+        printer.text("=" * 32 + "\n\n")
+
+        printer.set(align='left', bold=False)
+
+        # Extract additional field values for page 1
+        phone = booking.get('phone') or booking.get('customer_phone') or ''
+        email = booking.get('email') or booking.get('customer_email') or ''
+        date = booking.get('date') or ''
+        end_time = booking.get('end_time') or ''
+        booking_type = booking.get('booking_type') or booking.get('type') or ''
+        table = booking.get('table') or booking.get('table_number') or ''
+        room = booking.get('room') or ''
+        duration = booking.get('duration') or ''
+        status = booking.get('status') or ''
+        source = booking.get('source') or ''
+        deposit = booking.get('deposit') or ''
+        total = booking.get('total') or booking.get('amount') or ''
+
+        # Print fields in pairs (side by side where possible)
+        def print_field_pair(label1, val1, label2=None, val2=None):
+            if val1 and str(val1).strip():
+                printer.set(bold=True)
+                printer.text(f"{label1}: ")
+                printer.set(bold=False)
+                printer.text(f"{val1}")
+                if label2 and val2 and str(val2).strip():
+                    printer.text(" | ")
+                    printer.set(bold=True)
+                    printer.text(f"{label2}: ")
+                    printer.set(bold=False)
+                    printer.text(f"{val2}")
+                printer.text("\n")
+            elif label2 and val2 and str(val2).strip():
                 printer.set(bold=True)
                 printer.text(f"{label2}: ")
                 printer.set(bold=False)
-                printer.text(f"{val2}")
-            printer.text("\n")
-        elif label2 and val2 and str(val2).strip():
+                printer.text(f"{val2}\n")
+
+        # Row 1: Name | Phone
+        print_field_pair("Name", name, "Phone", phone)
+
+        # Row 2: Email (full width if present)
+        if email and str(email).strip():
             printer.set(bold=True)
-            printer.text(f"{label2}: ")
+            printer.text("Email: ")
             printer.set(bold=False)
-            printer.text(f"{val2}\n")
+            printer.text(f"{email}\n")
 
-    # Row 1: Name | Phone
-    print_field_pair("Name", name, "Phone", phone)
+        # Row 3: Date | Time
+        print_field_pair("Date", date, "Time", time_val)
 
-    # Row 2: Email (full width if present)
-    if email and str(email).strip():
-        printer.set(bold=True)
-        printer.text("Email: ")
-        printer.set(bold=False)
-        printer.text(f"{email}\n")
+        # Row 4: End Time | Duration
+        print_field_pair("End", end_time, "Duration", duration)
 
-    # Row 3: Date | Time
-    print_field_pair("Date", date, "Time", time_val)
+        # Row 5: Party Size | Table
+        print_field_pair("Guests", party_size, "Table", table)
 
-    # Row 4: End Time | Duration
-    print_field_pair("End", end_time, "Duration", duration)
+        # Row 6: Type | Room
+        print_field_pair("Type", booking_type, "Room", room)
 
-    # Row 5: Party Size | Table
-    print_field_pair("Guests", party_size, "Table", table)
+        # Row 7: Status | Source
+        print_field_pair("Status", status, "Source", source)
 
-    # Row 6: Type | Room
-    print_field_pair("Type", booking_type, "Room", room)
+        # Row 8: Deposit | Total
+        print_field_pair("Deposit", deposit, "Total", total)
 
-    # Row 7: Status | Source
-    print_field_pair("Status", status, "Source", source)
+        # Notes section (larger, more prominent)
+        notes = booking.get('notes') or booking.get('special_requests') or booking.get('comments')
+        if notes and str(notes).strip():
+            printer.text("\n")
+            printer.text("-" * 32 + "\n")
+            printer.set(bold=True)
+            printer.text("NOTES:\n")
+            printer.set(bold=False)
+            for line in str(notes).split('\n'):
+                printer.text(f"{line}\n")
+            printer.text("-" * 32 + "\n")
 
-    # Row 8: Deposit | Total
-    print_field_pair("Deposit", deposit, "Total", total)
-
-    # Notes section (larger, more prominent)
-    notes = booking.get('notes') or booking.get('special_requests') or booking.get('comments')
-    if notes and str(notes).strip():
         printer.text("\n")
-        printer.text("-" * 32 + "\n")
-        printer.set(bold=True)
-        printer.text("NOTES:\n")
-        printer.set(bold=False)
-        for line in str(notes).split('\n'):
-            printer.text(f"{line}\n")
-        printer.text("-" * 32 + "\n")
-
-    printer.text("\n")
-    print_footer(printer, beep=beep)
+        print_footer(printer, beep=beep)
 
     # === PAGE 2: Table Marker (Large Text) ===
     printer.set(align='center', bold=True, width=1, height=1)
@@ -677,22 +688,31 @@ def api_print_message():
 @app.route('/print/booking', methods=['POST'])
 @require_api_key
 def api_print_booking():
-    """Print a booking ticket."""
+    """Print a booking ticket.
+
+    Body params:
+        booking: dict - Booking data (required)
+        printer: str - Target printer (default: 'bar')
+        beep: bool - Enable buzzer (default: True)
+        name_only: bool - Print only the name ticket (page 2), not full booking details (default: False)
+    """
     data = request.get_json()
     if not data or not data.get('booking'):
         return jsonify({"success": False, "error": "Booking data is required"}), 400
 
     printer_id = data.get('printer', 'bar')
     beep = data.get('beep', True)
+    name_only = data.get('name_only', False)
 
     printer = get_printer(printer_id)
     if not printer:
         return jsonify({"success": False, "error": "Printer not available"}), 503
 
     try:
-        print_booking(printer, data['booking'], beep=beep)
+        print_booking(printer, data['booking'], beep=beep, name_only=name_only)
         printer.close()
-        return jsonify({"success": True, "message": "Booking printed"})
+        message = "Name ticket printed" if name_only else "Booking printed"
+        return jsonify({"success": True, "message": message})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
