@@ -28,7 +28,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -621,7 +621,7 @@ def discover_printers():
 # =============================================================================
 
 @app.route('/print/test', methods=['POST'])
-@require_api_key
+@require_auth  # Changed from require_api_key to allow Basic Auth from web UI
 def api_print_test():
     """Send a test print."""
     data = request.get_json() or {}
