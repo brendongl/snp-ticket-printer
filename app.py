@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.5"
+VERSION = "0.6.6"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -456,6 +456,91 @@ def print_text_as_image(printer, text, font_size=80, center=True):
         printer.text(f"{text}\n")
 
 
+def create_landscape_ticket(name, pax, time_str, font_size=55):
+    """Create a rotated landscape ticket image for table markers.
+
+    Creates a compact ticket with name + party size on top line
+    and time on second line, then rotates 90 degrees for landscape printing.
+
+    Args:
+        name: Customer name (will be uppercased)
+        pax: Party size (number of guests)
+        time_str: Booking time
+        font_size: Main font size (default 55 for good visibility)
+
+    Returns:
+        PIL Image rotated 90 degrees for landscape orientation, or None if Pillow unavailable
+    """
+    if Image is None or ImageDraw is None or ImageFont is None:
+        return None
+
+    # Load fonts
+    font = None
+    small_font = None
+    font_paths = [
+        # Windows fonts
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        # Linux/Docker fonts
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    ]
+
+    for font_path in font_paths:
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+            small_font = ImageFont.truetype(font_path, int(font_size * 0.7))
+            break
+        except (OSError, IOError):
+            continue
+
+    if font is None:
+        font = ImageFont.load_default()
+        small_font = font
+        print("[WARN] Using default font for landscape ticket")
+
+    # Build text lines
+    main_text = f"{name.upper()} - {pax}pax"
+
+    # Measure text dimensions
+    temp_img = Image.new('1', (1, 1), 1)
+    temp_draw = ImageDraw.Draw(temp_img)
+
+    main_bbox = temp_draw.textbbox((0, 0), main_text, font=font)
+    main_w = main_bbox[2] - main_bbox[0]
+    main_h = main_bbox[3] - main_bbox[1]
+
+    time_w, time_h = 0, 0
+    if time_str:
+        time_bbox = temp_draw.textbbox((0, 0), time_str, font=small_font)
+        time_w = time_bbox[2] - time_bbox[0]
+        time_h = time_bbox[3] - time_bbox[1]
+
+    # Calculate image dimensions with padding
+    padding = 20
+    img_width = max(main_w, time_w) + padding * 2
+    img_height = main_h + (time_h + 10 if time_str else 0) + padding * 2
+
+    # Create image (white background, monochrome)
+    img = Image.new('1', (img_width, img_height), 1)
+    draw = ImageDraw.Draw(img)
+
+    # Draw main text centered
+    x1 = (img_width - main_w) // 2
+    draw.text((x1, padding), main_text, font=font, fill=0)
+
+    # Draw time centered below main text
+    if time_str:
+        x2 = (img_width - time_w) // 2
+        draw.text((x2, padding + main_h + 10), time_str, font=small_font, fill=0)
+
+    # Rotate 90 degrees for landscape orientation
+    img = img.rotate(90, expand=True)
+
+    return img
+
+
 # =============================================================================
 # PRINT TEMPLATES
 # =============================================================================
@@ -606,33 +691,36 @@ def print_booking(printer, booking, beep=True, name_only=False):
         printer.text("\n")
         print_footer(printer, beep=beep)
 
-    # === PAGE 2: Table Marker (IMAGE-BASED LARGE TEXT) ===
-    # Using image rendering for maximum text size on XPRINTER and other thermal printers
-    # that don't properly support ESC/POS text scaling commands
+    # === PAGE 2: Table Marker (LANDSCAPE IMAGE-BASED) ===
+    # Using rotated image rendering for compact landscape tickets on XPRINTER
 
-    # Header
-    printer.set(align='center', bold=True, width=1, height=1)
-    printer.text("=" * 32 + "\n")
-    printer.text("SIP N PLAY\n")
-    printer.text("=" * 32 + "\n\n")
-
-    # Name in LARGE IMAGE TEXT (font size 100 for maximum visibility)
+    # Create landscape ticket image
     display_name = str(name).upper() if name else "GUEST"
-    print_text_as_image(printer, display_name, font_size=100, center=True)
-    printer.text("\n")
+    ticket_img = create_landscape_ticket(display_name, str(party_size) if party_size else "?", str(time_val) if time_val else "")
 
-    # Party size in large image text
-    if party_size:
-        print_text_as_image(printer, str(party_size), font_size=120, center=True)
-        print_text_as_image(printer, "PEOPLE", font_size=50, center=True)
-        printer.text("\n")
+    # Print header line
+    printer.set(align='center')
+    printer.text("=" * 32 + "\n")
 
-    # Time in medium image text
-    if time_val:
-        print_text_as_image(printer, str(time_val), font_size=60, center=True)
+    # Print the rotated landscape ticket
+    if ticket_img:
+        try:
+            printer.image(ticket_img, center=True)
+        except Exception as e:
+            # Fallback to text if image fails
+            print(f"[WARN] Image print failed: {e}")
+            printer.set(align='center', bold=True)
+            printer.text(f"{display_name} - {party_size}pax\n")
+            if time_val:
+                printer.text(f"{time_val}\n")
+    else:
+        # Fallback if Pillow not available
+        printer.set(align='center', bold=True)
+        printer.text(f"{display_name} - {party_size}pax\n")
+        if time_val:
+            printer.text(f"{time_val}\n")
 
-    printer.text("\n")
-    printer.set(align='center', width=1, height=1)
+    # Print footer line
     printer.text("=" * 32 + "\n\n")
 
     # Cut and beep for name_only mode
