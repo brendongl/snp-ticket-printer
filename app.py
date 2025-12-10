@@ -28,7 +28,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -494,32 +494,37 @@ def print_booking(printer, booking, beep=True, name_only=False):
         print_footer(printer, beep=beep)
 
     # === PAGE 2: Table Marker (MAXIMUM SIZE TEXT) ===
-    # Most XPRINTER and ESC/POS printers support width/height up to 8
+    # Using raw ESC/POS commands for maximum compatibility with XPRINTER
+    # GS ! n command (1D 21 n): n = (width-1)<<4 | (height-1)
+    # Maximum is 8x8: n = 0x77
 
-    # Small header
-    printer.set(align='center', bold=True, width=1, height=1)
+    # Reset to normal size first
+    printer._raw(b'\x1D\x21\x00')  # GS ! 0 = normal size (1x1)
+    printer._raw(b'\x1B\x61\x01')  # ESC a 1 = center align
+    printer._raw(b'\x1B\x45\x01')  # ESC E 1 = bold on
     printer.text("=" * 32 + "\n")
     printer.text("SIP N PLAY\n")
     printer.text("=" * 32 + "\n\n")
 
-    # Name in MAXIMUM possible text (width=4, height=4 for huge text)
-    printer.set(align='center', bold=True, width=4, height=4)
+    # Name in MAXIMUM possible text (8x width, 8x height)
     display_name = str(name).upper() if name else "GUEST"
+    printer._raw(b'\x1D\x21\x77')  # GS ! 0x77 = 8x width, 8x height (MAXIMUM)
     printer.text(f"{display_name}\n\n")
 
-    # Party size in large text
+    # Party size in large text (6x width, 6x height)
     if party_size:
-        printer.set(align='center', bold=True, width=3, height=3)
+        printer._raw(b'\x1D\x21\x55')  # GS ! 0x55 = 6x width, 6x height
         printer.text(f"{party_size}\n")
-        printer.set(width=2, height=2)
+        printer._raw(b'\x1D\x21\x33')  # GS ! 0x33 = 4x width, 4x height
         printer.text("PEOPLE\n\n")
 
-    # Time in medium-large text
+    # Time in medium-large text (3x width, 3x height)
     if time_val:
-        printer.set(align='center', bold=True, width=2, height=2)
+        printer._raw(b'\x1D\x21\x22')  # GS ! 0x22 = 3x width, 3x height
         printer.text(f"{time_val}\n")
 
-    printer.set(width=1, height=1)
+    # Reset to normal
+    printer._raw(b'\x1D\x21\x00')  # GS ! 0 = normal size
     printer.text("\n")
     printer.text("=" * 32 + "\n\n")
 
