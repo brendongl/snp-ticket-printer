@@ -28,7 +28,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -493,31 +493,43 @@ def print_booking(printer, booking, beep=True, name_only=False):
         printer.text("\n")
         print_footer(printer, beep=beep)
 
-    # === PAGE 2: Table Marker (Large Text) ===
+    # === PAGE 2: Table Marker (MAXIMUM SIZE TEXT) ===
+    # Most XPRINTER and ESC/POS printers support width/height up to 8
+
+    # Small header
     printer.set(align='center', bold=True, width=1, height=1)
-    printer.text("~" * 32 + "\n")
-    printer.text("SIP N PLAY BOOKING\n")
-    printer.text("~" * 32 + "\n\n")
+    printer.text("=" * 32 + "\n")
+    printer.text("SIP N PLAY\n")
+    printer.text("=" * 32 + "\n\n")
 
-    # Name in LARGEST possible text (width=2, height=2 is max for most ESC/POS)
-    printer.set(align='center', bold=True, width=2, height=2)
+    # Name in MAXIMUM possible text (width=4, height=4 for huge text)
+    printer.set(align='center', bold=True, width=4, height=4)
     display_name = str(name).upper() if name else "GUEST"
-    printer.text(f"{display_name}\n")
+    printer.text(f"{display_name}\n\n")
 
-    # Party size
+    # Party size in large text
     if party_size:
-        printer.text(f"{party_size} PEOPLE\n")
+        printer.set(align='center', bold=True, width=3, height=3)
+        printer.text(f"{party_size}\n")
+        printer.set(width=2, height=2)
+        printer.text("PEOPLE\n\n")
 
-    # Time in large text
+    # Time in medium-large text
     if time_val:
-        printer.set(width=2, height=1)
-        printer.text(f"\n{time_val}\n")
+        printer.set(align='center', bold=True, width=2, height=2)
+        printer.text(f"{time_val}\n")
 
     printer.set(width=1, height=1)
     printer.text("\n")
-    printer.text("~" * 32 + "\n\n")
+    printer.text("=" * 32 + "\n\n")
 
-    # Cut without beep for second page
+    # Cut and beep for name_only mode
+    if name_only and beep:
+        try:
+            if config.get('beep', {}).get('enabled', True):
+                printer.buzzer(times=config['beep'].get('times', 1), duration=config['beep'].get('duration', 100))
+        except Exception:
+            pass
     printer.cut()
 
 
