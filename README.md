@@ -2,6 +2,9 @@
 
 A Flask service for printing to network ESC/POS thermal printers with web-based management UI. Designed for Unraid deployment via Docker.
 
+**Live URL**: https://printer.sipnplay.cafe
+**Local URL**: http://192.168.50.109:5001
+
 ## Features
 
 - **Web-based Management UI** - Configure printers, send messages, monitor health
@@ -9,8 +12,9 @@ A Flask service for printing to network ESC/POS thermal printers with web-based 
 - **Network Discovery** - Scan for printers on your network
 - **Health Monitoring** - Background monitoring with offline alerts
 - **Notifications** - Discord webhook and Pushover alerts when printers go offline
-- **API Authentication** - Optional API key protection
-- **Print Templates** - Message, reminder, task, and order templates
+- **Authentication** - Basic Auth for browser + API key for programmatic access
+- **Booking Prints** - Print booking details + table marker cards
+- **Buzzer Support** - Beep alerts when prints arrive
 
 ## Quick Start
 
@@ -26,7 +30,7 @@ Your POS thermal printers should be connected via Ethernet and have an IP addres
 
 ```bash
 cp .env.example .env
-# Edit .env with your printer's IP address and notification settings
+# Edit .env with your settings
 ```
 
 ### 3. Run with Docker Compose
@@ -44,90 +48,105 @@ docker-compose down
 
 ### 4. Access Web UI
 
-Open `http://localhost:5000` in your browser to access the management interface.
+Open `http://localhost:5000` in your browser (requires login).
 
-## Web UI Features
-
-### Printer Management
-- View all configured printers with online/offline status
-- Add new printers by IP address
-- Remove printers
-- Send test prints to verify connectivity
-
-### Printer Discovery
-- Scan your network for thermal printers
-- Automatically find printers on port 9100
-- Add discovered printers with one click
-
-### Send Messages
-- Send custom messages to any configured printer
-- Multiple templates: message, reminder, task, order
-- Preview before printing
-
-### Health Monitoring
-- Enable background monitoring (configurable interval)
-- Automatic notifications when printers go offline
-- Real-time status updates
-
-### Notifications
-- **Discord Webhooks** - Get alerts in your Discord channel
-- **Pushover** - Mobile push notifications
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Web UI |
-| `/health` | GET | Health check with config info |
-| `/api/status` | GET | All printer statuses |
-| `/api/printer/<name>/ping` | GET | Ping specific printer |
-| `/api/printer/add` | POST | Add new printer |
-| `/api/printer/remove` | POST | Remove printer |
-| `/api/discover` | GET | Scan network for printers |
-| `/api/print` | POST | Send print job |
-| `/api/config/notifications` | GET/POST | Notification settings |
-| `/api/monitoring/start` | POST | Start health monitoring |
-| `/api/monitoring/stop` | POST | Stop health monitoring |
-| `/api/monitoring/status` | GET | Monitoring status |
-
-### Example: Print Custom Message
-
-```bash
-# Print to POS Printer 1
-curl -X POST http://localhost:5000/print/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "printer": "pos1",
-    "title": "REMINDER",
-    "message": "Dont forget to clock out!"
-  }'
-
-# Print to POS Printer 2 (Xprinter Q80C)
-curl -X POST http://localhost:5000/print/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "printer": "pos2",
-    "title": "KITCHEN",
-    "message": "Order ready for pickup!"
-  }'
-```
-
-### Example: Scan for Printers
-
-```bash
-curl "http://localhost:5000/api/discover?subnet=192.168.50&start=1&end=254"
-```
+**Default credentials:**
+- Username: `admin`
+- Password: `sipnplay2025`
 
 ## Pre-configured Printers
 
 The service comes with two pre-configured printers for Sip & Play:
 
-| ID | IP Address | Name | Description |
-|----|------------|------|-------------|
-| `pos1` | `192.168.50.103` | POS Printer 1 | Main POS printer |
-| `pos2` | `192.168.50.200` | POS Printer 2 (Q80C) | Xprinter Q80C |
+| ID | IP Address | Name | Location |
+|----|------------|------|----------|
+| `bar` | `192.168.50.200` | Bar | Front counter |
+| `kitchen` | `192.168.50.103` | Kitchen | Kitchen area |
 
 Additional printers can be added via the web UI or API.
+
+## API Endpoints
+
+### Public (No Auth)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+
+### Browser Auth (Basic Auth)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web UI |
+| `/printer/status` | GET | All printer statuses |
+| `/printer/ping` | GET | Ping specific printer |
+| `/printer/discover` | GET | Scan network for printers |
+| `/config/printers` | GET | Get printer configs |
+| `/config/printer` | POST | Add new printer |
+| `/config/printer/<id>` | DELETE | Remove printer |
+| `/config/beep` | GET/POST | Beep/buzzer settings |
+| `/config/notifications` | GET/POST | Notification settings |
+| `/monitoring/status` | GET | Monitoring status |
+| `/monitoring/toggle` | POST | Enable/disable monitoring |
+
+### API Key Auth (for SNP-site)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/print/test` | POST | Test print |
+| `/print/message` | POST | Print custom message |
+| `/print/booking` | POST | Print booking ticket + table marker |
+| `/print/reminder` | POST | Print staff reminder |
+| `/webhook/booking` | POST | Webhook for booking prints |
+| `/webhook/message` | POST | Webhook for messages |
+| `/webhook/reminder` | POST | Webhook for reminders |
+
+### Example: Print to Bar
+
+```bash
+curl -X POST https://printer.sipnplay.cafe/print/message \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "printer": "bar",
+    "title": "REMINDER",
+    "message": "Dont forget to clock out!"
+  }'
+```
+
+### Example: Print to Kitchen
+
+```bash
+curl -X POST https://printer.sipnplay.cafe/print/message \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "printer": "kitchen",
+    "title": "ORDER",
+    "message": "Table 5 - 2x Coffee"
+  }'
+```
+
+### Example: Print Booking
+
+```bash
+curl -X POST https://printer.sipnplay.cafe/webhook/booking \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "printer": "bar",
+    "booking": {
+      "name": "Bob Jane",
+      "phone": "0901234567",
+      "date": "Dec 10",
+      "time": "18:30",
+      "party_size": 5,
+      "type": "Standard",
+      "notes": "Birthday party"
+    }
+  }'
+```
+
+This prints TWO pages:
+1. **Booking Details** - All info for staff reference
+2. **Table Marker** - Large text with name & party size for table
 
 ## Environment Variables
 
@@ -139,19 +158,19 @@ Additional printers can be added via the web UI or API.
 | `DEBUG` | `false` | Enable debug mode |
 | `CONFIG_FILE` | `/app/data/config.json` | Config file location |
 
+### Authentication
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_USERNAME` | `admin` | Web UI username |
+| `AUTH_PASSWORD` | `sipnplay2025` | Web UI password |
+| `API_KEY` | `snp-printer-secret-key-change-me` | API key for SNP-site |
+
 ### Notifications
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook for offline alerts |
 | `PUSHOVER_USER_KEY` | - | Pushover user key |
 | `PUSHOVER_APP_TOKEN` | - | Pushover app token |
-
-### Security
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `REQUIRE_AUTH` | `false` | Require API keys |
-| `API_KEY_SNP_SITE` | - | API key for snp-site |
-| `API_KEY_ADMIN` | - | API key for admin access |
 
 ## Docker Deployment
 
@@ -170,7 +189,8 @@ docker build -t snp-printer-service .
 docker run -d \
   -p 5000:5000 \
   -v $(pwd)/data:/app/data \
-  -e NETWORK_HOST=192.168.50.103 \
+  -e AUTH_PASSWORD=your-secure-password \
+  -e API_KEY=your-secure-api-key \
   snp-printer-service
 ```
 
@@ -179,11 +199,11 @@ docker run -d \
 1. Go to Docker tab in Unraid
 2. Click "Add Container"
 3. Configure:
-   - **Repository**: `ghcr.io/brendongl/snp-ticket-printer:latest` (or build locally)
+   - **Repository**: `ghcr.io/brendongl/snp-ticket-printer:latest`
    - **Network Type**: `bridge` (or `host` for easier discovery)
    - **Port**: `5000:5000`
    - **Path**: `/app/data` → `/mnt/user/appdata/snp-printer/`
-   - **Environment Variables**: Configure as needed
+   - **Environment Variables**: Set AUTH_PASSWORD, API_KEY
 
 ## Troubleshooting
 
@@ -214,10 +234,10 @@ docker run -d \
 
 ## Integration with snp-site
 
-The admin page at `/admin/printer` in snp-site can connect to this service:
+The admin page at `/admin/printer` in snp-site connects to this service:
 
-1. Set `PRINTER_SERVICE_URL=http://your-unraid-ip:5000` in snp-site's `.env`
-2. Set `PRINTER_API_KEY` if authentication is enabled
+1. Set `PRINTER_SERVICE_URL=https://printer.sipnplay.cafe` in snp-site's `.env`
+2. Set `PRINTER_API_KEY=your-api-key`
 3. Access printer controls from the admin menu
 
 ## License
