@@ -7,9 +7,11 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for python-escpos
+# Install system dependencies for python-escpos and fonts for image-based text printing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcups2-dev \
+    fonts-dejavu-core \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Create data directory for config persistence

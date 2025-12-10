@@ -1,10 +1,11 @@
 """
-SNP Printer Service v0.5.0
+SNP Printer Service v0.6.5
 Flask service for printing to network ESC/POS thermal printers.
 Features: Web UI, discovery, monitoring, Discord/Pushover notifications, booking prints.
 """
 
 import os
+import io
 import json
 import socket
 import time
@@ -22,13 +23,21 @@ except ImportError:
     Network = None
     print("[WARN] python-escpos not installed, printer functions will be simulated")
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    print("[WARN] Pillow not installed, image-based text printing will be disabled")
+
 app = Flask(__name__)
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.4"
+VERSION = "0.6.5"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -344,6 +353,110 @@ def stop_monitoring():
 
 
 # =============================================================================
+# TEXT TO IMAGE (for larger text on thermal printers)
+# =============================================================================
+
+# Standard 58mm thermal printer width in pixels (assuming 203 DPI)
+PRINTER_WIDTH_PX = 384  # 48mm printable area × 8 dots/mm
+
+def create_text_image(text, font_size=80, bold=True, max_width=PRINTER_WIDTH_PX):
+    """Create a monochrome image from text for thermal printing.
+
+    Args:
+        text: Text to render
+        font_size: Font size in pixels (larger = bigger text)
+        bold: Use bold font if available
+        max_width: Maximum width in pixels (default: 384 for 58mm printer)
+
+    Returns:
+        PIL Image object (mode='1' for monochrome)
+    """
+    if Image is None or ImageDraw is None:
+        return None
+
+    # Try to use a bold font, fall back to default
+    font = None
+    font_paths = [
+        # Windows fonts
+        "C:/Windows/Fonts/arialbd.ttf",  # Arial Bold
+        "C:/Windows/Fonts/arial.ttf",     # Arial
+        "C:/Windows/Fonts/impact.ttf",    # Impact (very bold)
+        # Linux fonts
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        # Container fonts
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    ]
+
+    for font_path in font_paths:
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+            break
+        except (OSError, IOError):
+            continue
+
+    if font is None:
+        # Fall back to default font (smaller but guaranteed to work)
+        font = ImageFont.load_default()
+        print("[WARN] Using default font - text may be small")
+
+    # Create temporary image to measure text size
+    temp_img = Image.new('1', (1, 1), color=1)
+    temp_draw = ImageDraw.Draw(temp_img)
+
+    # Get text bounding box
+    bbox = temp_draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
+    # Add padding
+    padding = 10
+    img_width = max(text_width + padding * 2, max_width)
+    img_height = text_height + padding * 2
+
+    # Create final image (white background)
+    img = Image.new('1', (img_width, img_height), color=1)
+    draw = ImageDraw.Draw(img)
+
+    # Center the text
+    x = (img_width - text_width) // 2
+    y = padding
+
+    # Draw text (black on white)
+    draw.text((x, y), text, font=font, fill=0)
+
+    return img
+
+
+def print_text_as_image(printer, text, font_size=80, center=True):
+    """Print text as an image for maximum size compatibility.
+
+    Args:
+        printer: The printer instance
+        text: Text to print
+        font_size: Font size (default 80 for large visible text)
+        center: Whether to center the image
+    """
+    if Image is None:
+        # Fall back to regular text
+        printer.set(align='center' if center else 'left', bold=True, width=2, height=2)
+        printer.text(f"{text}\n")
+        return
+
+    img = create_text_image(text, font_size=font_size)
+    if img:
+        try:
+            printer.image(img, center=center)
+        except Exception as e:
+            print(f"[WARN] Failed to print image: {e}, falling back to text")
+            printer.set(align='center' if center else 'left', bold=True)
+            printer.text(f"{text}\n")
+    else:
+        printer.set(align='center' if center else 'left', bold=True)
+        printer.text(f"{text}\n")
+
+
+# =============================================================================
 # PRINT TEMPLATES
 # =============================================================================
 
@@ -493,39 +606,33 @@ def print_booking(printer, booking, beep=True, name_only=False):
         printer.text("\n")
         print_footer(printer, beep=beep)
 
-    # === PAGE 2: Table Marker (MAXIMUM SIZE TEXT) ===
-    # Using raw ESC/POS commands for maximum compatibility with XPRINTER
-    # GS ! n command (1D 21 n): n = (width-1)<<4 | (height-1)
-    # Maximum is 8x8: n = 0x77
+    # === PAGE 2: Table Marker (IMAGE-BASED LARGE TEXT) ===
+    # Using image rendering for maximum text size on XPRINTER and other thermal printers
+    # that don't properly support ESC/POS text scaling commands
 
-    # Reset to normal size first
-    printer._raw(b'\x1D\x21\x00')  # GS ! 0 = normal size (1x1)
-    printer._raw(b'\x1B\x61\x01')  # ESC a 1 = center align
-    printer._raw(b'\x1B\x45\x01')  # ESC E 1 = bold on
+    # Header
+    printer.set(align='center', bold=True, width=1, height=1)
     printer.text("=" * 32 + "\n")
     printer.text("SIP N PLAY\n")
     printer.text("=" * 32 + "\n\n")
 
-    # Name in MAXIMUM possible text (8x width, 8x height)
+    # Name in LARGE IMAGE TEXT (font size 100 for maximum visibility)
     display_name = str(name).upper() if name else "GUEST"
-    printer._raw(b'\x1D\x21\x77')  # GS ! 0x77 = 8x width, 8x height (MAXIMUM)
-    printer.text(f"{display_name}\n\n")
-
-    # Party size in large text (6x width, 6x height)
-    if party_size:
-        printer._raw(b'\x1D\x21\x55')  # GS ! 0x55 = 6x width, 6x height
-        printer.text(f"{party_size}\n")
-        printer._raw(b'\x1D\x21\x33')  # GS ! 0x33 = 4x width, 4x height
-        printer.text("PEOPLE\n\n")
-
-    # Time in medium-large text (3x width, 3x height)
-    if time_val:
-        printer._raw(b'\x1D\x21\x22')  # GS ! 0x22 = 3x width, 3x height
-        printer.text(f"{time_val}\n")
-
-    # Reset to normal
-    printer._raw(b'\x1D\x21\x00')  # GS ! 0 = normal size
+    print_text_as_image(printer, display_name, font_size=100, center=True)
     printer.text("\n")
+
+    # Party size in large image text
+    if party_size:
+        print_text_as_image(printer, str(party_size), font_size=120, center=True)
+        print_text_as_image(printer, "PEOPLE", font_size=50, center=True)
+        printer.text("\n")
+
+    # Time in medium image text
+    if time_val:
+        print_text_as_image(printer, str(time_val), font_size=60, center=True)
+
+    printer.text("\n")
+    printer.set(align='center', width=1, height=1)
     printer.text("=" * 32 + "\n\n")
 
     # Cut and beep for name_only mode
@@ -669,6 +776,50 @@ def api_print_test():
         )
         printer.close()
         return jsonify({"success": True, "message": "Test print sent"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/print/test-image', methods=['POST'])
+@require_auth
+def api_print_test_image():
+    """Test image-based text printing for larger text support."""
+    data = request.get_json() or {}
+    printer_id = data.get('printer', 'bar')
+    text = data.get('text', 'TEST')
+    font_size = data.get('font_size', 100)
+    beep = data.get('beep', True)
+
+    printer = get_printer(printer_id)
+    if not printer:
+        return jsonify({"success": False, "error": "Printer not available"}), 503
+
+    try:
+        printer.set(align='center', bold=True)
+        printer.text("=" * 32 + "\n")
+        printer.text("IMAGE TEXT TEST\n")
+        printer.text("=" * 32 + "\n\n")
+
+        # Print test text as image
+        print_text_as_image(printer, text, font_size=font_size, center=True)
+        printer.text("\n")
+
+        # Print some comparison info
+        printer.set(align='center', width=1, height=1)
+        printer.text(f"Font size: {font_size}px\n")
+        printer.text(f"v{VERSION}\n")
+        printer.text("=" * 32 + "\n\n")
+
+        # Beep if enabled
+        if beep and config['beep']['enabled']:
+            try:
+                printer.buzzer(times=config['beep']['times'], duration=config['beep']['duration'])
+            except Exception:
+                pass
+
+        printer.cut()
+        printer.close()
+        return jsonify({"success": True, "message": f"Image text test printed: '{text}' at {font_size}px"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
