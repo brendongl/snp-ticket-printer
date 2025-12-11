@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.6"
+VERSION = "0.6.8"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -1032,13 +1032,37 @@ def add_printer():
     return jsonify({"success": True, "message": f"Printer '{printer_id}' added"})
 
 
+@app.route('/config/printer/<printer_id>', methods=['PUT'])
+@require_auth
+def update_printer(printer_id):
+    """Update an existing printer."""
+    if printer_id not in config['printers']:
+        return jsonify({"success": False, "error": "Printer not found"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    # Update allowed fields
+    if 'host' in data:
+        config['printers'][printer_id]['host'] = data['host']
+    if 'port' in data:
+        config['printers'][printer_id]['port'] = int(data['port'])
+    if 'name' in data:
+        config['printers'][printer_id]['name'] = data['name']
+
+    save_config()
+    return jsonify({
+        "success": True,
+        "message": f"Printer '{printer_id}' updated",
+        "printer": config['printers'][printer_id]
+    })
+
+
 @app.route('/config/printer/<printer_id>', methods=['DELETE'])
 @require_auth
 def remove_printer(printer_id):
     """Remove a printer."""
-    if printer_id in ['bar', 'kitchen']:
-        return jsonify({"success": False, "error": "Cannot remove default printers"}), 400
-
     if printer_id in config['printers']:
         del config['printers'][printer_id]
         save_config()
