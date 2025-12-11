@@ -727,7 +727,7 @@ def print_message(printer, title, message, subtitle=None, beep=True):
     print_footer(printer, beep=beep)
 
 
-def print_booking(printer, booking, beep=True, name_only=False):
+def print_booking(printer, booking, beep=True, name_only=False, skip_name_ticket=False):
     """Print a booking ticket with all available fields, plus a table marker page.
 
     Args:
@@ -735,6 +735,7 @@ def print_booking(printer, booking, beep=True, name_only=False):
         booking: Booking data dictionary
         beep: Whether to beep after printing
         name_only: If True, only print page 2 (name ticket for table)
+        skip_name_ticket: If True, skip page 2 (name ticket) - use for private rooms
     """
 
     # Extract field values needed for page 2 (always needed)
@@ -833,28 +834,42 @@ def print_booking(printer, booking, beep=True, name_only=False):
         print_footer(printer, beep=beep)
 
     # === PAGE 2: Table Marker (LANDSCAPE IMAGE-BASED) ===
-    # Using rotated image rendering for compact landscape tickets on XPRINTER
+    # Skip for private room bookings (they don't need table markers)
+    if not skip_name_ticket:
+        # Using rotated image rendering for compact landscape tickets on XPRINTER
 
-    # Create landscape ticket image
-    display_name = str(name).upper() if name else "GUEST"
-    ticket_img = create_landscape_ticket(
-        display_name,
-        str(party_size) if party_size else "?",
-        str(time_val) if time_val else "",
-        booking_type=str(booking_type) if booking_type else None
-    )
+        # Create landscape ticket image
+        display_name = str(name).upper() if name else "GUEST"
+        ticket_img = create_landscape_ticket(
+            display_name,
+            str(party_size) if party_size else "?",
+            str(time_val) if time_val else "",
+            booking_type=str(booking_type) if booking_type else None
+        )
 
-    # Print header line
-    printer.set(align='center')
-    printer.text("=" * 32 + "\n")
+        # Print header line
+        printer.set(align='center')
+        printer.text("=" * 32 + "\n")
 
-    # Print the rotated landscape ticket
-    if ticket_img:
-        try:
-            printer.image(ticket_img, center=True)
-        except Exception as e:
-            # Fallback to text if image fails
-            print(f"[WARN] Image print failed: {e}")
+        # Print the rotated landscape ticket
+        if ticket_img:
+            try:
+                printer.image(ticket_img, center=True)
+            except Exception as e:
+                # Fallback to text if image fails
+                print(f"[WARN] Image print failed: {e}")
+                printer.set(align='center', bold=True, width=2, height=2)
+                printer.text(f"{display_name}\n")
+                printer.set(width=1, height=1, bold=True)
+                printer.text(f"{party_size}pax\n")
+                if booking_type:
+                    printer.set(bold=False)
+                    printer.text(f"{expand_booking_type(booking_type)}\n")
+                if time_val:
+                    printer.set(bold=False)
+                    printer.text(f"{format_time_ampm(time_val)}\n")
+        else:
+            # Fallback if Pillow not available
             printer.set(align='center', bold=True, width=2, height=2)
             printer.text(f"{display_name}\n")
             printer.set(width=1, height=1, bold=True)
@@ -865,30 +880,21 @@ def print_booking(printer, booking, beep=True, name_only=False):
             if time_val:
                 printer.set(bold=False)
                 printer.text(f"{format_time_ampm(time_val)}\n")
+
+        # Print footer line
+        printer.text("=" * 32 + "\n\n")
+
+        # Cut and beep for name_only mode
+        if name_only and beep:
+            try:
+                if config.get('beep', {}).get('enabled', True):
+                    printer.buzzer(times=config['beep'].get('times', 1), duration=config['beep'].get('duration', 100))
+            except Exception:
+                pass
+        printer.cut()
     else:
-        # Fallback if Pillow not available
-        printer.set(align='center', bold=True, width=2, height=2)
-        printer.text(f"{display_name}\n")
-        printer.set(width=1, height=1, bold=True)
-        printer.text(f"{party_size}pax\n")
-        if booking_type:
-            printer.set(bold=False)
-            printer.text(f"{expand_booking_type(booking_type)}\n")
-        if time_val:
-            printer.set(bold=False)
-            printer.text(f"{format_time_ampm(time_val)}\n")
-
-    # Print footer line
-    printer.text("=" * 32 + "\n\n")
-
-    # Cut and beep for name_only mode
-    if name_only and beep:
-        try:
-            if config.get('beep', {}).get('enabled', True):
-                printer.buzzer(times=config['beep'].get('times', 1), duration=config['beep'].get('duration', 100))
-        except Exception:
-            pass
-    printer.cut()
+        # For skip_name_ticket mode (private rooms), just cut after page 1
+        printer.cut()
 
 
 def print_reminder(printer, reminder_type, staff_name, message, action_url=None, beep=True):
@@ -1109,6 +1115,7 @@ def api_print_booking():
         printer: str - Target printer (default: 'bar')
         beep: bool - Enable buzzer (default: True)
         name_only: bool - Print only the name ticket (page 2), not full booking details (default: False)
+        skip_name_ticket: bool - Skip the name ticket (page 2), only print booking details (default: False)
     """
     data = request.get_json()
     if not data or not data.get('booking'):
@@ -1117,15 +1124,21 @@ def api_print_booking():
     printer_id = data.get('printer', 'bar')
     beep = data.get('beep', True)
     name_only = data.get('name_only', False)
+    skip_name_ticket = data.get('skip_name_ticket', False)
 
     printer = get_printer(printer_id)
     if not printer:
         return jsonify({"success": False, "error": "Printer not available"}), 503
 
     try:
-        print_booking(printer, data['booking'], beep=beep, name_only=name_only)
+        print_booking(printer, data['booking'], beep=beep, name_only=name_only, skip_name_ticket=skip_name_ticket)
         printer.close()
-        message = "Name ticket printed" if name_only else "Booking printed"
+        if name_only:
+            message = "Name ticket printed"
+        elif skip_name_ticket:
+            message = "Booking details printed (no name ticket)"
+        else:
+            message = "Booking printed"
         return jsonify({"success": True, "message": message})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
