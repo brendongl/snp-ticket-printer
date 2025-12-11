@@ -1,5 +1,5 @@
 """
-SNP Printer Service v0.6.5
+SNP Printer Service v0.6.9
 Flask service for printing to network ESC/POS thermal printers.
 Features: Web UI, discovery, monitoring, Discord/Pushover notifications, booking prints.
 """
@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.8"
+VERSION = "0.6.9"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -913,7 +913,7 @@ def api_print_test_image():
 
 
 @app.route('/print/message', methods=['POST'])
-@require_api_key
+@require_auth  # Changed from require_api_key to allow Basic Auth from web UI
 def api_print_message():
     """Print a custom message."""
     data = request.get_json()
@@ -974,7 +974,7 @@ def api_print_booking():
 
 
 @app.route('/print/reminder', methods=['POST'])
-@require_api_key
+@require_auth  # Changed from require_api_key to allow Basic Auth from web UI
 def api_print_reminder():
     """Print a staff reminder."""
     data = request.get_json()
