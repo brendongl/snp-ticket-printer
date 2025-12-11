@@ -1,5 +1,5 @@
 """
-SNP Printer Service v0.6.9
+SNP Printer Service v0.7.0
 Flask service for printing to network ESC/POS thermal printers.
 Features: Web UI, discovery, monitoring, Discord/Pushover notifications, booking prints.
 """
@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.6.9"
+VERSION = "0.7.0"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -456,16 +456,91 @@ def print_text_as_image(printer, text, font_size=80, center=True):
         printer.text(f"{text}\n")
 
 
-def create_landscape_ticket(name, pax, time_str, font_size=55):
+def format_time_ampm(time_str):
+    """Convert 24h time string to 12h AM/PM format.
+
+    Args:
+        time_str: Time in various formats (HH:MM, HH:MM:SS, etc.)
+
+    Returns:
+        Time in format like "7pm", "11am", "12:30pm"
+    """
+    if not time_str:
+        return ""
+
+    try:
+        # Handle various input formats
+        time_str = str(time_str).strip()
+
+        # Extract hours and minutes
+        parts = time_str.replace(':', ' ').split()
+        hour = int(parts[0]) if parts else 0
+        minute = int(parts[1]) if len(parts) > 1 else 0
+
+        # Convert to 12-hour format
+        if hour == 0:
+            hour_12 = 12
+            suffix = "am"
+        elif hour < 12:
+            hour_12 = hour
+            suffix = "am"
+        elif hour == 12:
+            hour_12 = 12
+            suffix = "pm"
+        else:
+            hour_12 = hour - 12
+            suffix = "pm"
+
+        # Format output - only show minutes if not :00
+        if minute == 0:
+            return f"{hour_12}{suffix}"
+        else:
+            return f"{hour_12}:{minute:02d}{suffix}"
+    except (ValueError, IndexError):
+        return time_str  # Return original if parsing fails
+
+
+def expand_booking_type(booking_type):
+    """Expand booking type abbreviation to full name.
+
+    Args:
+        booking_type: Type code (BG, VG, BG+VG, etc.)
+
+    Returns:
+        Full name for display
+    """
+    if not booking_type:
+        return ""
+
+    type_str = str(booking_type).upper().strip()
+
+    type_map = {
+        'BG': 'Board Games',
+        'VG': 'Video Games',
+        'BG+VG': 'Board + Video Games',
+        'BGVG': 'Board + Video Games',
+        'BG VG': 'Board + Video Games',
+        'BOARD': 'Board Games',
+        'VIDEO': 'Video Games',
+        'BOARD GAMES': 'Board Games',
+        'VIDEO GAMES': 'Video Games',
+    }
+
+    return type_map.get(type_str, booking_type)
+
+
+def create_landscape_ticket(name, pax, time_str, booking_type=None, font_size=55):
     """Create a rotated landscape ticket image for table markers.
 
-    Creates a compact ticket with name + party size on top line
-    and time on second line, then rotates 90 degrees for landscape printing.
+    Creates a compact ticket with name + party size on top line,
+    booking type on second line, and time on third line,
+    then rotates 90 degrees for landscape printing.
 
     Args:
         name: Customer name (will be uppercased)
         pax: Party size (number of guests)
-        time_str: Booking time
+        time_str: Booking time (will be converted to AM/PM)
+        booking_type: Type of booking (BG, VG, BG+VG)
         font_size: Main font size (default 55 for good visibility)
 
     Returns:
@@ -502,6 +577,8 @@ def create_landscape_ticket(name, pax, time_str, font_size=55):
 
     # Build text lines
     main_text = f"{name.upper()} - {pax}pax"
+    type_text = expand_booking_type(booking_type) if booking_type else ""
+    time_text = format_time_ampm(time_str) if time_str else ""
 
     # Measure text dimensions
     temp_img = Image.new('1', (1, 1), 1)
@@ -511,29 +588,50 @@ def create_landscape_ticket(name, pax, time_str, font_size=55):
     main_w = main_bbox[2] - main_bbox[0]
     main_h = main_bbox[3] - main_bbox[1]
 
+    type_w, type_h = 0, 0
+    if type_text:
+        type_bbox = temp_draw.textbbox((0, 0), type_text, font=small_font)
+        type_w = type_bbox[2] - type_bbox[0]
+        type_h = type_bbox[3] - type_bbox[1]
+
     time_w, time_h = 0, 0
-    if time_str:
-        time_bbox = temp_draw.textbbox((0, 0), time_str, font=small_font)
+    if time_text:
+        time_bbox = temp_draw.textbbox((0, 0), time_text, font=small_font)
         time_w = time_bbox[2] - time_bbox[0]
         time_h = time_bbox[3] - time_bbox[1]
 
     # Calculate image dimensions with padding
     padding = 20
-    img_width = max(main_w, time_w) + padding * 2
-    img_height = main_h + (time_h + 10 if time_str else 0) + padding * 2
+    line_spacing = 10
+    img_width = max(main_w, type_w, time_w) + padding * 2
+    img_height = main_h + padding * 2
+    if type_text:
+        img_height += type_h + line_spacing
+    if time_text:
+        img_height += time_h + line_spacing
 
     # Create image (white background, monochrome)
     img = Image.new('1', (img_width, img_height), 1)
     draw = ImageDraw.Draw(img)
 
-    # Draw main text centered
-    x1 = (img_width - main_w) // 2
-    draw.text((x1, padding), main_text, font=font, fill=0)
+    # Track current Y position
+    y_pos = padding
 
-    # Draw time centered below main text
-    if time_str:
-        x2 = (img_width - time_w) // 2
-        draw.text((x2, padding + main_h + 10), time_str, font=small_font, fill=0)
+    # Draw main text centered (name + pax)
+    x1 = (img_width - main_w) // 2
+    draw.text((x1, y_pos), main_text, font=font, fill=0)
+    y_pos += main_h + line_spacing
+
+    # Draw booking type centered
+    if type_text:
+        x2 = (img_width - type_w) // 2
+        draw.text((x2, y_pos), type_text, font=small_font, fill=0)
+        y_pos += type_h + line_spacing
+
+    # Draw time centered
+    if time_text:
+        x3 = (img_width - time_w) // 2
+        draw.text((x3, y_pos), time_text, font=small_font, fill=0)
 
     # Rotate 90 degrees for landscape orientation
     img = img.rotate(90, expand=True)
@@ -601,6 +699,7 @@ def print_booking(printer, booking, beep=True, name_only=False):
     name = booking.get('customer_name') or booking.get('name') or ''
     party_size = booking.get('party_size') or booking.get('guests') or ''
     time_val = booking.get('time') or booking.get('start_time') or ''
+    booking_type = booking.get('booking_type') or booking.get('type') or ''
 
     # Skip page 1 if name_only is True
     if not name_only:
@@ -619,7 +718,7 @@ def print_booking(printer, booking, beep=True, name_only=False):
         email = booking.get('email') or booking.get('customer_email') or ''
         date = booking.get('date') or ''
         end_time = booking.get('end_time') or ''
-        booking_type = booking.get('booking_type') or booking.get('type') or ''
+        # booking_type already extracted above for page 2
         table = booking.get('table') or booking.get('table_number') or ''
         room = booking.get('room') or ''
         duration = booking.get('duration') or ''
@@ -696,7 +795,12 @@ def print_booking(printer, booking, beep=True, name_only=False):
 
     # Create landscape ticket image
     display_name = str(name).upper() if name else "GUEST"
-    ticket_img = create_landscape_ticket(display_name, str(party_size) if party_size else "?", str(time_val) if time_val else "")
+    ticket_img = create_landscape_ticket(
+        display_name,
+        str(party_size) if party_size else "?",
+        str(time_val) if time_val else "",
+        booking_type=str(booking_type) if booking_type else None
+    )
 
     # Print header line
     printer.set(align='center')
@@ -711,14 +815,18 @@ def print_booking(printer, booking, beep=True, name_only=False):
             print(f"[WARN] Image print failed: {e}")
             printer.set(align='center', bold=True)
             printer.text(f"{display_name} - {party_size}pax\n")
+            if booking_type:
+                printer.text(f"{expand_booking_type(booking_type)}\n")
             if time_val:
-                printer.text(f"{time_val}\n")
+                printer.text(f"{format_time_ampm(time_val)}\n")
     else:
         # Fallback if Pillow not available
         printer.set(align='center', bold=True)
         printer.text(f"{display_name} - {party_size}pax\n")
+        if booking_type:
+            printer.text(f"{expand_booking_type(booking_type)}\n")
         if time_val:
-            printer.text(f"{time_val}\n")
+            printer.text(f"{format_time_ampm(time_val)}\n")
 
     # Print footer line
     printer.text("=" * 32 + "\n\n")
