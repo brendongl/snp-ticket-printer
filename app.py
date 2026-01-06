@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -605,7 +605,8 @@ def create_landscape_ticket(name, pax, time_str, booking_type=None, font_size=55
     name_text = name.upper() if name else "GUEST"
     pax_text = f"{pax}pax"
     type_text = expand_booking_type(booking_type) if booking_type else ""
-    time_text = format_time_ampm(time_str) if time_str else ""
+    # Use time as-is (already formatted correctly from booking data)
+    time_text = str(time_str).strip() if time_str else ""
 
     # Measure text dimensions
     temp_img = Image.new('1', (1, 1), 1)
