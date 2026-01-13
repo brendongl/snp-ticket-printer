@@ -37,7 +37,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # =============================================================================
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
@@ -728,6 +728,101 @@ def print_message(printer, title, message, subtitle=None, beep=True):
     print_footer(printer, beep=beep)
 
 
+def print_web_verify_ticket(printer, booking, beep=True):
+    """Print a simple web booking verification ticket.
+
+    This is a simplified ticket that prompts staff to verify the booking
+    in Booking Management. No name ticket is printed.
+
+    Args:
+        printer: The printer instance
+        booking: Booking data dictionary
+        beep: Whether to beep after printing
+    """
+    name = booking.get('name') or booking.get('customer_name') or 'Unknown'
+    date = booking.get('date') or ''
+    time_val = booking.get('time') or ''
+    party_size = booking.get('party_size') or ''
+    room = booking.get('room') or ''
+    game_type = booking.get('type') or ''
+    deposit = booking.get('deposit') or ''
+
+    # Header
+    printer.set(align='center', bold=True, width=1, height=1)
+    printer.text("=" * 32 + "\n")
+    printer.set(width=2, height=1)
+    printer.text("WEB BOOKING\n")
+    printer.set(width=1, height=1)
+    printer.text("VERIFY IN SYSTEM\n")
+    printer.text("=" * 32 + "\n\n")
+
+    # Booking details
+    printer.set(align='left', bold=False)
+
+    # Name
+    printer.set(bold=True)
+    printer.text("Name: ")
+    printer.set(bold=False)
+    printer.text(f"{name}\n")
+
+    # Date
+    if date:
+        printer.set(bold=True)
+        printer.text("Date: ")
+        printer.set(bold=False)
+        printer.text(f"{date}\n")
+
+    # Time
+    if time_val:
+        printer.set(bold=True)
+        printer.text("Time: ")
+        printer.set(bold=False)
+        printer.text(f"{time_val}\n")
+
+    # Party size
+    if party_size:
+        printer.set(bold=True)
+        printer.text("Pax:  ")
+        printer.set(bold=False)
+        printer.text(f"{party_size}\n")
+
+    printer.text("\n")
+
+    # Room (for private rooms)
+    if room:
+        printer.set(bold=True)
+        printer.text("Room: ")
+        printer.set(bold=False)
+        printer.text(f"{room}\n")
+
+    # Deposit (for private rooms)
+    if deposit:
+        printer.set(bold=True)
+        printer.text("Deposit: ")
+        printer.set(bold=False)
+        printer.text(f"{deposit}\n")
+
+    # Game type (for non-private rooms)
+    if game_type and not room:
+        printer.set(bold=True)
+        printer.text("Game: ")
+        printer.set(bold=False)
+        printer.text(f"{game_type}\n")
+
+    # Footer with verification reminder
+    printer.text("\n")
+    printer.set(align='center')
+    printer.text("-" * 32 + "\n")
+    printer.set(bold=True)
+    printer.text("Check Booking Management\n")
+    printer.text("to confirm this booking\n")
+    printer.set(bold=False)
+    printer.text("-" * 32 + "\n")
+
+    printer.text("\n")
+    print_footer(printer, beep=beep)
+
+
 def print_booking(printer, booking, beep=True, name_only=False, skip_name_ticket=False):
     """Print a booking ticket with all available fields, plus a table marker page.
 
@@ -1113,6 +1208,7 @@ def api_print_booking():
 
     Body params:
         booking: dict - Booking data (required)
+            - template: str - 'web_verify' for simple verification ticket (optional)
         printer: str - Target printer (default: 'bar')
         beep: bool - Enable buzzer (default: True)
         name_only: bool - Print only the name ticket (page 2), not full booking details (default: False)
@@ -1126,20 +1222,30 @@ def api_print_booking():
     beep = data.get('beep', True)
     name_only = data.get('name_only', False)
     skip_name_ticket = data.get('skip_name_ticket', False)
+    booking_data = data['booking']
+    template = booking_data.get('template', '')
 
     printer = get_printer(printer_id)
     if not printer:
         return jsonify({"success": False, "error": "Printer not available"}), 503
 
     try:
-        print_booking(printer, data['booking'], beep=beep, name_only=name_only, skip_name_ticket=skip_name_ticket)
-        printer.close()
-        if name_only:
-            message = "Name ticket printed"
-        elif skip_name_ticket:
-            message = "Booking details printed (no name ticket)"
+        # Check for template-specific printing
+        if template == 'web_verify':
+            # Simple verification ticket for web bookings
+            print_web_verify_ticket(printer, booking_data, beep=beep)
+            message = "Web booking verification ticket printed"
         else:
-            message = "Booking printed"
+            # Standard booking ticket
+            print_booking(printer, booking_data, beep=beep, name_only=name_only, skip_name_ticket=skip_name_ticket)
+            if name_only:
+                message = "Name ticket printed"
+            elif skip_name_ticket:
+                message = "Booking details printed (no name ticket)"
+            else:
+                message = "Booking printed"
+
+        printer.close()
         return jsonify({"success": True, "message": message})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
